@@ -1,0 +1,39 @@
+[package]
+name = "rustlite-scan"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# CIDR expansion
+cidr = "0.3.1"
+
+# Async runtime
+tokio = { version = "1.41", features = ["full"] }
+
+# Futures utilities
+futures = "0.3"
+
+# Error handling
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Progress bar
+indicatif = "0.17"
+
+# Optional: colored output for friendlier CLI
+colored = "2.1"
+csv = "1.2"
+
+trust-dns-proto = "0.23"
+chrono = "0.4"
+rand = "0.8"
+once_cell = "1.20"
+tempfile = "3.6"
+
+
