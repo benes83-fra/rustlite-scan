@@ -1,13 +1,12 @@
 use serde::Serialize;
-
+use chrono::{Utc, DateTime};
 #[derive(Debug, Serialize, Clone)]
 pub struct PortResult {
     pub port: u16,
-    pub protocol: &'static str, // "tcp" or "udp"
-    pub state: &'static str,    // "open", "closed", "filtered", "unknown"
+    pub protocol: &'static str,
+    pub state: &'static str,
     pub banner: Option<String>,
 }
-
 
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct UdpMetrics {
@@ -19,11 +18,50 @@ pub struct UdpMetrics {
     pub packets_received: u64,
 }
 
+/// Small serializable struct describing a limiter's configured settings
+#[derive(Debug, Serialize, Clone)]
+pub struct LimiterInfo {
+    pub pps: u64,
+    pub burst: u64,
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct HostResult {
     pub host: String,
     pub ip: String,
     pub results: Vec<PortResult>,
-    pub udp_metrics: Option<UdpMetrics>, // new field
+    pub udp_metrics: Option<UdpMetrics>,
+
+    /// Optional diagnostics: which limiters were applied for this host
+    pub host_limiter: Option<LimiterInfo>,
+    pub global_limiter: Option<LimiterInfo>,
 }
 
+
+#[derive(Debug, Serialize)]
+pub struct ProbeEvent {
+    pub ts: DateTime<Utc>,
+    pub host: String,
+    pub ip: String,
+    pub port: u16,
+    pub protocol: String, // "tcp" or "udp"
+    pub outcome: String,  // "sent", "recv", "timeout", "retry", "open", "closed", "open|filtered", "unknown"
+    pub duration_ms: Option<u64>,
+    pub banner: Option<String>,
+
+    // cumulative UDP metrics at this point (if UDP)
+    pub udp_attempts: Option<u64>,
+    pub udp_retries: Option<u64>,
+    pub udp_timeouts: Option<u64>,
+    pub udp_successes: Option<u64>,
+    pub udp_packets_sent: Option<u64>,
+    pub udp_packets_received: Option<u64>,
+
+    // limiter metadata
+    pub host_limiter_pps: Option<u64>,
+    pub host_limiter_burst: Option<u64>,
+    pub global_limiter_pps: Option<u64>,
+    pub global_limiter_burst: Option<u64>,
+
+    pub note: Option<String>,
+}

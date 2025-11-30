@@ -6,8 +6,9 @@ use rand::Rng;
 use trust_dns_proto::serialize::binary::BinDecodable;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
-use chrono::{DateTime, Utc};
 use crate::utils::RateLimiter;
+use chrono::DateTime;
+
 
 #[derive(Debug, Clone, Default)]
 pub struct UdpProbeStats {
@@ -17,11 +18,14 @@ pub struct UdpProbeStats {
     pub successes: u64,
     pub packets_sent: u64,
     pub packets_received: u64,
+
+    // limiter metadata for diagnostics
+    pub host_limiter_pps: Option<u64>,
+    pub host_limiter_burst: Option<u64>,
+    pub global_limiter_pps: Option<u64>,
+    pub global_limiter_burst: Option<u64>,
 }
 
-/// UDP probe with DNS parsing and configurable retry/backoff.
-/// Respects a shared rate limiter for each packet send.
-/// Returns both the PortResult and per‑probe stats.
 pub async fn udp_probe(
     ip: &str,
     port: u16,
@@ -33,6 +37,16 @@ pub async fn udp_probe(
 ) -> (PortResult, UdpProbeStats) {
     let mut stats = UdpProbeStats::default();
     let local = "0.0.0.0:0";
+
+    // Populate limiter metadata (if present)
+    if let Some(ref hl) = host_limiter {
+        stats.host_limiter_pps = Some(hl.pps());
+        stats.host_limiter_burst = Some(hl.burst());
+    }
+    if let Some(ref gl) = global_limiter {
+        stats.global_limiter_pps = Some(gl.pps());
+        stats.global_limiter_burst = Some(gl.burst());
+    }
 
     let payload: Vec<u8> = match port {
         53 => vec![
@@ -68,8 +82,17 @@ pub async fn udp_probe(
 
             // initial send (rate-limited)
             stats.attempts += 1;
-            if let Some(rl) = &global_limiter { rl.acquire().await; }
-            if let Some(rl) = &host_limiter { rl.acquire().await; }
+
+            // small randomized jitter to avoid synchronized bursts
+            let jitter = rand::thread_rng().gen_range(0..20);
+            if jitter > 0 {
+                tokio::time::sleep(Duration::from_millis(jitter)).await;
+            }
+
+            // Acquire host limiter first (fairness), then global limiter
+            if let Some(hl) = &host_limiter { hl.acquire().await; }
+            if let Some(gl) = &global_limiter { gl.acquire().await; }
+
             let _ = sock.send(&payload).await;
             stats.packets_sent += 1;
 
@@ -125,9 +148,14 @@ pub async fn udp_probe(
                             let wait = base.saturating_add(jitter);
                             sleep(Duration::from_millis(wait)).await;
 
-                            // resend (rate-limited)
-                            if let Some(rl) = &global_limiter { rl.acquire().await; }
-                            if let Some(rl) = &host_limiter { rl.acquire().await; }
+                            // resend (rate-limited) with small jitter
+                            let jitter2 = rand::thread_rng().gen_range(0..10);
+                            if jitter2 > 0 {
+                                tokio::time::sleep(Duration::from_millis(jitter2)).await;
+                            }
+
+                            if let Some(hl) = &host_limiter { hl.acquire().await; }
+                            if let Some(gl) = &global_limiter { gl.acquire().await; }
                             let _ = sock.send(&payload).await;
                             stats.packets_sent += 1;
                             continue;

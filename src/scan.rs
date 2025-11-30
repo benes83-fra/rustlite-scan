@@ -19,12 +19,33 @@ use csv::Writer;
 use crate::probes::udp::UdpProbeStats;
 use cidr::IpCidr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{ Instant};
 use std::collections::HashMap;
-use std::path::Path;
 use tokio::signal;
 use std::fs;
+use tokio::sync::Mutex as TokioMutex;
+use std::fs::OpenOptions;
+use serde_json::to_string;
 
+pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
+
+pub fn open_metrics_writer(path: &str) -> anyhow::Result<MetricsWriter> {
+    let f = OpenOptions::new().create(true).append(true).open(path)?;
+    let w = std::io::BufWriter::new(f);
+    Ok(Arc::new(TokioMutex::new(w)))
+}
+
+pub async fn write_metric_line(writer: &MetricsWriter, value: &crate::types::ProbeEvent) {
+    // Serialize on async task to avoid blocking the runtime if needed
+    let line = match serde_json::to_string(value) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut guard = writer.lock().await;
+    let _ = guard.write_all(line.as_bytes());
+    let _ = guard.write_all(b"\n");
+    let _ = guard.flush();
+}
 
 fn load_blocklist(path: &str) -> anyhow::Result<Vec<IpCidr>> {
     let mut out = Vec::new();
@@ -80,7 +101,10 @@ pub fn write_csv_file_atomic(path: &str, hosts: &[crate::types::HostResult]) -> 
         "host","ip","port","protocol","state","banner",
         "udp_attempts","udp_retries","udp_timeouts","udp_successes",
         "udp_packets_sent","udp_packets_received",
+        "host_limiter_pps","host_limiter_burst",
+        "global_limiter_pps","global_limiter_burst",
     ])?;
+
 
     for host in hosts {
         let (att, ret, to, succ, psent, precv) = match &host.udp_metrics {
@@ -88,6 +112,11 @@ pub fn write_csv_file_atomic(path: &str, hosts: &[crate::types::HostResult]) -> 
             None => (0u64, 0u64, 0u64, 0u64, 0u64, 0u64),
         };
         for port in &host.results {
+            let host_pps = host.host_limiter.as_ref().map(|l| l.pps).unwrap_or(0);
+            let host_burst = host.host_limiter.as_ref().map(|l| l.burst).unwrap_or(0);
+            let global_pps = host.global_limiter.as_ref().map(|l| l.pps).unwrap_or(0);
+            let global_burst = host.global_limiter.as_ref().map(|l| l.burst).unwrap_or(0);
+
             wtr.write_record(&[
                 host.host.as_str(),
                 host.ip.as_str(),
@@ -101,7 +130,12 @@ pub fn write_csv_file_atomic(path: &str, hosts: &[crate::types::HostResult]) -> 
                 &succ.to_string(),
                 &psent.to_string(),
                 &precv.to_string(),
+                &host_pps.to_string(),
+                &host_burst.to_string(),
+                &global_pps.to_string(),
+                &global_burst.to_string(),
             ])?;
+
         }
     }
 
@@ -128,19 +162,13 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
 
     // Header
     wtr.write_record(&[
-        "host",
-        "ip",
-        "port",
-        "protocol",
-        "state",
-        "banner",
-        "udp_attempts",
-        "udp_retries",
-        "udp_timeouts",
-        "udp_successes",
-        "udp_packets_sent",
-        "udp_packets_received",
+        "host","ip","port","protocol","state","banner",
+        "udp_attempts","udp_retries","udp_timeouts","udp_successes",
+        "udp_packets_sent","udp_packets_received",
+        "host_limiter_pps","host_limiter_burst",
+        "global_limiter_pps","global_limiter_burst",
     ])?;
+
 
     for host in hosts {
         let (att, ret, to, succ, psent, precv) = match &host.udp_metrics {
@@ -149,6 +177,11 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
         };
 
         for port in &host.results {
+            let host_pps = host.host_limiter.as_ref().map(|l| l.pps).unwrap_or(0);
+            let host_burst = host.host_limiter.as_ref().map(|l| l.burst).unwrap_or(0);
+            let global_pps = host.global_limiter.as_ref().map(|l| l.pps).unwrap_or(0);
+            let global_burst = host.global_limiter.as_ref().map(|l| l.burst).unwrap_or(0);
+
             wtr.write_record(&[
                 host.host.as_str(),
                 host.ip.as_str(),
@@ -162,7 +195,12 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
                 &succ.to_string(),
                 &psent.to_string(),
                 &precv.to_string(),
+                &host_pps.to_string(),
+                &host_burst.to_string(),
+                &global_pps.to_string(),
+                &global_burst.to_string(),
             ])?;
+
         }
     }
 
@@ -195,6 +233,42 @@ pub async fn run(cli: Cli) -> Result<()> {
     } else {
         None
     };
+    let metrics_writer: Option<MetricsWriter> = if !cli.metrics_out.is_empty() {
+        match open_metrics_writer(&cli.metrics_out) {
+            Ok(w) => {
+                eprintln!("Writing metrics to {}", &cli.metrics_out);
+                Some(w)
+            }
+            Err(e) => {
+                eprintln!("Failed to open metrics file {}: {}", &cli.metrics_out, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+        // If dry-run, print planned limiter settings and exit
+    if cli.dry_run {
+        println!("Dry run: planned limiter settings");
+        if let Some(gl) = &global_limiter {
+            println!("  Global limiter: pps={} burst={}", gl.pps(), gl.burst());
+        } else {
+            println!("  Global limiter: disabled");
+        }
+
+        // For each target, show per-host limiter that would be created
+        for t in &targets {
+            let host_lim = if cli.udp_rate_host > 0 {
+                format!("pps={} burst={}", cli.udp_rate_host, cli.udp_burst_host)
+            } else {
+                "disabled".to_string()
+            };
+            println!("  Host {} -> host_limiter: {}", t, host_lim);
+        }
+        return Ok(());
+    }
+
         // Load blocklist if provided
     let blocklist: Vec<IpCidr> = if !cli.blocklist.is_empty() {
         match load_blocklist(&cli.blocklist) {
@@ -279,6 +353,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.host_cooldown_ms,          // NEW
             last_sent_map.clone(),         // NEW
             shutdown.clone(),              // OPTIONAL if you added it to signature
+            metrics_writer.clone()
         ).await;
 
         all.push(host_result.clone());
@@ -473,6 +548,7 @@ async fn discover_hosts(
 }
 
 /// Per-host scanning: calls probes from modules and aggregates per-host UDP metrics
+/// Per-host scanning: calls probes from modules and aggregates per-host UDP metrics
 pub async fn scan_host(
     ip: String,
     ports: &[u16],
@@ -487,6 +563,7 @@ pub async fn scan_host(
     host_cooldown_ms: u64,                                 // NEW
     last_sent_map: Arc<Mutex<HashMap<String, Instant>>>,   // NEW
     shutdown: Arc<std::sync::atomic::AtomicBool>,          // OPTIONAL: if you want to check shutdown inside scan_host
+    metrics_writer: Option<MetricsWriter>,                 // OPTIONAL: if you want to write per-probe metrics
 ) -> HostResult {
     use futures::Future;
     use std::pin::Pin;
@@ -499,8 +576,9 @@ pub async fn scan_host(
 
     type ScanFuture = Pin<Box<dyn Future<Output = ScanItem> + Send>>;
 
+    // concurrency semaphore
     let semaphore = Arc::new(Semaphore::new(conc));
-    
+
     let mut tasks = FuturesUnordered::<ScanFuture>::new();
 
     let total = ports.len() as u64 * if udp { 2 } else { 1 };
@@ -512,78 +590,131 @@ pub async fn scan_host(
             .progress_chars("#>-"),
     );
 
+    // Per-port loop: spawn TCP and (optionally) UDP tasks.
     for &p in ports {
-        // TCP
-        {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let ip_owned = ip.clone();
-            let pb_clone = pb.clone();
-            tasks.push(Box::pin(async move {
-                let res = tcp_probe(&ip_owned, p, tcp_to_ms).await;
-                pb_clone.inc(1);
+        // Respect shutdown if requested
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // Acquire a permit before spawning tasks to limit concurrency
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+
+        // Per-iteration clones of shared optional handles so each closure gets its own Arc
+        let metrics_writer_call = metrics_writer.clone();
+        let host_limiter_call = host_limiter.clone();
+        let global_limiter_call = global_limiter.clone();
+
+        // Per-iteration owned values
+        let ip_for_tcp = ip.clone();
+        let pb_for_tcp = pb.clone();
+
+        // TCP task
+        tasks.push(Box::pin({
+            // Move only per-iteration clones into the closure
+            let ip_for_tcp = ip_for_tcp.clone();
+            let pb_for_tcp = pb_for_tcp.clone();
+           
+            let metrics_writer_call = metrics_writer_call.clone();
+            let host_limiter_call = host_limiter_call.clone();
+            let global_limiter_call = global_limiter_call.clone();
+
+            async move {
+                let res = tcp_probe(&ip_for_tcp, p, tcp_to_ms).await;
+                
+
+                if let Some(w) = metrics_writer_call.clone() {
+                    let event = crate::types::ProbeEvent {
+                        ts: chrono::Utc::now(),
+                        host: ip_for_tcp.clone(),
+                        ip: ip_for_tcp.clone(),
+                        port: p,
+                        protocol: "tcp".to_string(),
+                        outcome: res.state.to_string(),
+                        duration_ms: None,
+                        banner: res.banner.clone(),
+                        udp_attempts: None,
+                        udp_retries: None,
+                        udp_timeouts: None,
+                        udp_successes: None,
+                        udp_packets_sent: None,
+                        udp_packets_received: None,
+                        host_limiter_pps: host_limiter_call.as_ref().map(|h| h.pps()),
+                        host_limiter_burst: host_limiter_call.as_ref().map(|h| h.burst()),
+                        global_limiter_pps: global_limiter_call.as_ref().map(|g| g.pps()),
+                        global_limiter_burst: global_limiter_call.as_ref().map(|g| g.burst()),
+                        note: None,
+                    };
+                    write_metric_line(&w, &event).await;
+                }
+
+                pb_for_tcp.inc(1);
                 drop(permit);
                 ScanItem::Tcp(res)
+            }
+        }));
+
+        // If UDP scanning is enabled, spawn a UDP task for the same port
+        if udp {
+            // Acquire a second permit for the UDP probe (keeps concurrency semantics similar to original)
+            let permit2 = semaphore.clone().acquire_owned().await.unwrap();
+
+            // Per-iteration clones for UDP closure
+            let ip_for_udp = ip.clone();
+            let pb_for_udp = pb.clone();
+            let metrics_writer_call2 = metrics_writer.clone();
+            let host_limiter_call2 = host_limiter.clone();
+            let global_limiter_call2 = global_limiter.clone();
+
+            tasks.push(Box::pin({
+                let ip_for_udp = ip_for_udp.clone();
+                let pb_for_udp = pb_for_udp.clone();
+                
+                let metrics_writer_call2 = metrics_writer_call2.clone();
+                let host_limiter_call2 = host_limiter_call2.clone();
+                let global_limiter_call2 = global_limiter_call2.clone();
+
+                async move {
+                    // Clone limiters for the probe call so the probe can take ownership
+                    let g_lim_call = global_limiter_call2.clone();
+                    let h_lim_call = host_limiter_call2.clone();
+
+                    let (r, stats) = udp_probe(&ip_for_udp, p, udp_to_ms, udp_retries, udp_backoff_ms, g_lim_call, h_lim_call).await;
+
+                    if let Some(w) = metrics_writer_call2.clone() {
+                        let event = crate::types::ProbeEvent {
+                            ts: chrono::Utc::now(),
+                            host: ip_for_udp.clone(),
+                            ip: ip_for_udp.clone(),
+                            port: p,
+                            protocol: "udp".to_string(),
+                            outcome: r.state.to_string(),
+                            duration_ms: None,
+                            banner: r.banner.clone(),
+                            udp_attempts: Some(stats.attempts),
+                            udp_retries: Some(stats.retries),
+                            udp_timeouts: Some(stats.timeouts),
+                            udp_successes: Some(stats.successes),
+                            udp_packets_sent: Some(stats.packets_sent),
+                            udp_packets_received: Some(stats.packets_received),
+                            host_limiter_pps: host_limiter_call2.as_ref().map(|h| h.pps()),
+                            host_limiter_burst: host_limiter_call2.as_ref().map(|h| h.burst()),
+                            global_limiter_pps: global_limiter_call2.as_ref().map(|g| g.pps()),
+                            global_limiter_burst: global_limiter_call2.as_ref().map(|g| g.burst()),
+                            note: None,
+                        };
+                        write_metric_line(&w, &event).await;
+                    }
+
+                    pb_for_udp.inc(1);
+                    drop(permit2);
+                    ScanItem::Udp((r, stats))
+                }
             }));
         }
+    } // end for ports
 
-        // UDP
-        if udp {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let ip_owned = ip.clone();
-            let pb_clone = pb.clone();
-            let retries = udp_retries;
-            let backoff = udp_backoff_ms;
-            
-            // before pushing the task, capture clones
-let g_lim = global_limiter.clone();
-let h_lim = host_limiter.clone();
-let last_sent_map = last_sent_map.clone();
-let host_cooldown_ms = host_cooldown_ms;
-let ip_for_task = ip_owned.clone();
-let shutdown_for_task = shutdown.clone(); // if used
-
-tasks.push(Box::pin(async move {
-    // Optional: check shutdown early
-    if shutdown_for_task.load(std::sync::atomic::Ordering::SeqCst) {
-        // return a safe default result or skip
-    }
-
-    // Enforce per-host cooldown
-    if host_cooldown_ms > 0 {
-        // Acquire lock to check last timestamp
-        let mut map = last_sent_map.lock().await;
-        if let Some(prev) = map.get(&ip_for_task) {
-            let elapsed = prev.elapsed();
-            let cooldown = std::time::Duration::from_millis(host_cooldown_ms);
-            if elapsed < cooldown {
-                // compute remaining and drop lock before sleeping
-                let remaining = cooldown - elapsed;
-                drop(map);
-                tokio::time::sleep(remaining).await;
-                // re-lock to update timestamp
-                let mut map = last_sent_map.lock().await;
-                map.insert(ip_for_task.clone(), Instant::now());
-            } else {
-                // update timestamp immediately
-                map.insert(ip_for_task.clone(), Instant::now());
-            }
-        } else {
-            // no previous entry: insert now
-            map.insert(ip_for_task.clone(), Instant::now());
-        }
-    }
-
-    // Now call udp_probe with both limiters
-    let res = udp_probe(&ip_for_task, p, udp_to_ms, retries, backoff, g_lim, h_lim).await;
-    pb_clone.inc(1);
-    drop(permit);
-    ScanItem::Udp(res)
-}));
-
-          
-        }
-    }
-
+    // Collect results
     let mut results: Vec<PortResult> = Vec::new();
     let mut udp_metrics = UdpMetrics::default();
 
@@ -596,19 +727,34 @@ tasks.push(Box::pin(async move {
                 udp_metrics.retries += stats.retries;
                 udp_metrics.timeouts += stats.timeouts;
                 udp_metrics.successes += stats.successes;
+                udp_metrics.packets_sent += stats.packets_sent;
+                udp_metrics.packets_received += stats.packets_received;
             }
         }
     }
 
     pb.finish_with_message("Scan complete");
 
+    // Build limiter info for diagnostics
+    let host_lim_info = host_limiter.as_ref().map(|hl| crate::types::LimiterInfo {
+        pps: hl.pps(),
+        burst: hl.burst(),
+    });
+    let global_lim_info = global_limiter.as_ref().map(|gl| crate::types::LimiterInfo {
+        pps: gl.pps(),
+        burst: gl.burst(),
+    });
+
     HostResult {
         host: ip.clone(),
         ip: ip.clone(),
         results,
         udp_metrics: if udp { Some(udp_metrics) } else { None },
+        host_limiter: host_lim_info,
+        global_limiter: global_lim_info,
     }
 }
+
 
 
 

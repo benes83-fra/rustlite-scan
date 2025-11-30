@@ -75,6 +75,14 @@ pub struct Cli {
     /// Minimum per-host cooldown between UDP sends in milliseconds
     #[arg(long, default_value_t = 50)]
     pub host_cooldown_ms: u64,
+    /// Print planned limiter settings per host and exit (no network activity)
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub dry_run: bool,
+        /// Write per-probe metrics as JSON Lines to this file (append). Optional.
+    #[arg(long, value_name = "FILE", default_value = "")]
+    pub metrics_out: String,
+
+
 
 
 }
