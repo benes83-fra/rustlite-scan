@@ -4,6 +4,7 @@ mod netutils;
 mod scan;
 mod probes;
 mod utils;
+mod service;
 
 use anyhow::Result;
 use cli::Cli;

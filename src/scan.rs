@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use colored::*;
-use serde_json::json;
+use serde_json::{json,Value};
 use crate::utils::RateLimiter;
 use std::fs::File;
 use std::io::{BufWriter,Write,BufReader,BufRead};
@@ -23,9 +23,15 @@ use std::time::{ Instant};
 use std::collections::HashMap;
 use tokio::signal;
 use std::fs;
+use anyhow::Context;
 use tokio::sync::Mutex as TokioMutex;
 use std::fs::OpenOptions;
-use serde_json::to_string;
+use crate::probes::{ProbeHandle, default_probes};
+use crate::service::ServiceFingerprint;
+use std::time::Duration;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
 
@@ -34,6 +40,22 @@ pub fn open_metrics_writer(path: &str) -> anyhow::Result<MetricsWriter> {
     let w = std::io::BufWriter::new(f);
     Ok(Arc::new(TokioMutex::new(w)))
 }
+pub async fn write_json_line(writer: &MetricsWriter, value: &Value) -> anyhow::Result<()> {
+    // Serialize first (may fail)
+    let line = serde_json::to_string(value).context("serialize metric value")?;
+
+    // Lock the writer (async)
+    let mut guard = writer.lock().await;
+
+    // Write, newline, flush
+    guard.write_all(line.as_bytes()).context("write metric line")?;
+    guard.write_all(b"\n").context("write newline")?;
+    guard.flush().context("flush metric writer")?;
+
+    Ok(())
+}
+
+
 
 pub async fn write_metric_line(writer: &MetricsWriter, value: &crate::types::ProbeEvent) {
     // Serialize on async task to avoid blocking the runtime if needed
@@ -338,7 +360,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         } else {
             None
         };
-
+        let cli_par = Arc::new(cli.clone());
         let host_result = scan_host(
             ip.clone(),
             &ports,
@@ -353,7 +375,8 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.host_cooldown_ms,          // NEW
             last_sent_map.clone(),         // NEW
             shutdown.clone(),              // OPTIONAL if you added it to signature
-            metrics_writer.clone()
+            metrics_writer.clone(), 
+            cli_par
         ).await;
 
         all.push(host_result.clone());
@@ -560,10 +583,11 @@ pub async fn scan_host(
     udp_backoff_ms: u64,
     global_limiter: Option<Arc<RateLimiter>>,
     host_limiter: Option<Arc<RateLimiter>>,
-    host_cooldown_ms: u64,                                 // NEW
-    last_sent_map: Arc<Mutex<HashMap<String, Instant>>>,   // NEW
-    shutdown: Arc<std::sync::atomic::AtomicBool>,          // OPTIONAL: if you want to check shutdown inside scan_host
-    metrics_writer: Option<MetricsWriter>,                 // OPTIONAL: if you want to write per-probe metrics
+    host_cooldown_ms: u64,
+    last_sent_map: Arc<Mutex<HashMap<String, Instant>>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+    metrics_writer: Option<MetricsWriter>,
+    cli: Arc<Cli>, // <- new parameter
 ) -> HostResult {
     use futures::Future;
     use std::pin::Pin;
@@ -621,7 +645,7 @@ pub async fn scan_host(
 
             async move {
                 let res = tcp_probe(&ip_for_tcp, p, tcp_to_ms).await;
-                
+            
 
                 if let Some(w) = metrics_writer_call.clone() {
                     let event = crate::types::ProbeEvent {
@@ -676,6 +700,7 @@ pub async fn scan_host(
 
                 async move {
                     // Clone limiters for the probe call so the probe can take ownership
+                    
                     let g_lim_call = global_limiter_call2.clone();
                     let h_lim_call = host_limiter_call2.clone();
 
@@ -733,6 +758,113 @@ pub async fn scan_host(
         }
     }
 
+
+
+
+    // --- Begin probe invocation block ---
+
+
+    let mut fingerprints: Vec<ServiceFingerprint> = Vec::new();
+    // Only run probes if the CLI requested service probing
+    if cli.service_probes {
+        // collect open ports to probe: (port, &PortResult)
+        let open_ports: Vec<u16> = results
+            .iter()
+            .filter(|r| r.state == "open" || r.state == "open|filtered")
+            .map(|r| r.port)
+            .collect();
+
+        if !open_ports.is_empty() {
+            let probes = default_probes();
+            // For each open port, run matching probes concurrently but limited by semaphore
+            let mut probe_tasks = FuturesUnordered::new();
+
+            for &port in &open_ports {
+                for probe in probes.iter() {
+                    let target_ports = probe.ports();
+                    if !target_ports.is_empty() && !target_ports.contains(&port) {
+                        continue;
+                    }
+
+                    // clone what we need into the spawned task (clone Arcs here)
+                    let probe = probe.clone();
+                    let ip_clone = ip.clone();
+                    let metrics_writer_clone = metrics_writer.clone();
+                    let sem_clone = semaphore.clone();
+                    let last_sent_map_clone = last_sent_map.clone(); // <-- clone here
+                    let host_limiter_clone = host_limiter.clone();
+                    let global_limiter_clone = global_limiter.clone();
+                    let probe_timeout = cli.probe_timeout_ms;
+                    let metrics_sample = cli.metrics_sample;
+                    let host_cooldown_ms = host_cooldown_ms;
+
+                    probe_tasks.push(tokio::spawn(async move {
+                        // Acquire a permit inside the task (moved into the task)
+                        let _permit = sem_clone.acquire_owned().await.unwrap();
+
+                        // Best-effort per-host cooldown using the cloned Arc<Mutex<_>>
+                        if host_cooldown_ms > 0 {
+                            let key = format!("{}:{}", ip_clone, port);
+
+                            // Strict cooldown: await the lock on the cloned mutex
+                            let mut map = last_sent_map_clone.lock().await;
+                            let now = Instant::now();
+                            if let Some(prev) = map.get(&key) {
+                                let elapsed = now.duration_since(*prev);
+                                if elapsed.as_millis() < host_cooldown_ms as u128 {
+                                    let wait = host_cooldown_ms as u64 - elapsed.as_millis() as u64;
+                                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                                }
+                            }
+                            map.insert(key, Instant::now());
+                            // mutex guard dropped here when `map` goes out of scope
+                        }
+
+                        // Run the probe with a timeout
+                        let probe_fut = probe.probe(&ip_clone, port, probe_timeout);
+                        let res = tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut).await;
+
+                        match res {
+                            Ok(Some(fp)) => {
+                                // deterministic sampling: 1 in metrics_sample
+                                let emit = if metrics_sample <= 1 {
+                                    true
+                                } else {
+                                    let mut hasher = DefaultHasher::new();
+                                    format!("{}:{}:{}", ip_clone, port, probe.name()).hash(&mut hasher);
+                                    (hasher.finish() % (metrics_sample as u64)) == 0
+                                };
+
+                                if emit {
+                                    if let Some(w) = metrics_writer_clone {
+                                        let v = serde_json::to_value(&fp).unwrap_or(json!({"error":"serialize_failed"}));
+                                        let _ = crate::scan::write_json_line(&w, &v).await;
+                                    }
+                                }
+                                Some(fp)
+                            }
+                            _ => None,
+                        }
+                    }));
+                }
+            }
+
+
+            // Collect probe results (we ignore them here, but you could attach to HostResult)
+            while let Some(join_res) = probe_tasks.next().await {
+                if let Ok(Some(fp)) = join_res {
+                    // Optionally: push fingerprint into a host-level vector if you add it to HostResult
+                    fingerprints.push(fp);
+                }
+            }
+        }
+    }
+// --- End probe invocation block ---
+
+
+
+
+
     pb.finish_with_message("Scan complete");
 
     // Build limiter info for diagnostics
@@ -752,6 +884,7 @@ pub async fn scan_host(
         udp_metrics: if udp { Some(udp_metrics) } else { None },
         host_limiter: host_lim_info,
         global_limiter: global_lim_info,
+        fingerprints,
     }
 }
 

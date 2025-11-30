@@ -1,9 +1,7 @@
 use tempfile::tempdir;
-use rustlite_scan::utils::RateLimiter;
 use rustlite_scan::scan::{open_metrics_writer, write_metric_line};
 use rustlite_scan::types::ProbeEvent;
 use std::io::Write;
-use std::sync::Arc;
 use tokio::time::Duration;
 
 #[tokio::test]

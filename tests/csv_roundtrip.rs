@@ -8,7 +8,6 @@ use rustlite_scan::types::{HostResult, PortResult, UdpMetrics};
 fn csv_roundtrip_flexible() {
     let tmp = NamedTempFile::new().unwrap();
     let path = tmp.path().to_str().unwrap().to_string();
-
     let host = HostResult {
         host: "127.0.0.1".into(),
         ip: "127.0.0.1".into(),
@@ -18,6 +17,7 @@ fn csv_roundtrip_flexible() {
         udp_metrics: Some(UdpMetrics { attempts: 1, retries: 0, timeouts: 0, successes: 1, packets_sent: 1, packets_received: 1 }),
         host_limiter: None,
         global_limiter: None,
+        fingerprints: Vec::new(),
     };
 
     write_csv_file(&path, &[host.clone()]).unwrap();

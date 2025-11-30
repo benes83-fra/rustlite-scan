@@ -1,5 +1,6 @@
 use serde::Serialize;
 use chrono::{Utc, DateTime};
+use crate::service::ServiceFingerprint;
 #[derive(Debug, Serialize, Clone)]
 pub struct PortResult {
     pub port: u16,
@@ -35,6 +36,7 @@ pub struct HostResult {
     /// Optional diagnostics: which limiters were applied for this host
     pub host_limiter: Option<LimiterInfo>,
     pub global_limiter: Option<LimiterInfo>,
+    pub fingerprints: Vec<ServiceFingerprint>,
 }
 
 

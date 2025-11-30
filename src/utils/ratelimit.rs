@@ -65,6 +65,7 @@ impl RateLimiter {
     pub fn burst(&self) -> u64 {
         self.burst
     }
+   
     /// Perform a single refill step (useful for deterministic tests).
     /// This adds the same number of permits that the background task would add for one tick.
     pub fn refill_once(&self) {
@@ -76,9 +77,10 @@ impl RateLimiter {
         let capacity_left = self.burst.saturating_sub(available);
         let to_add = per_tick.min(capacity_left) as usize;
         if to_add > 0 {
-            // Arc<Semaphore> supports add_permits via deref
             self.sem.add_permits(to_add);
         }
 }
 
 }
+
+
