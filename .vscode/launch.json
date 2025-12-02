@@ -1,0 +1,173 @@
+{
+    // Verwendet IntelliSense zum Ermitteln möglicher Attribute.
+    // Zeigen Sie auf vorhandene Attribute, um die zugehörigen Beschreibungen anzuzeigen.
+    // Weitere Informationen finden Sie unter https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug unit tests in library 'rustlite_scan'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            }
+        },
+        {
+            "name": "Debug executable 'rustlite-scan'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=rustlite-scan"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'rustlite-scan'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=rustlite-scan"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'csv_roundtrip'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=csv_roundtrip"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'http_probe'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=http_probe"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'integration_scan'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=integration_scan"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'metrics_out_writes_json'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=metrics_out_writes_json"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'netutils_unit'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=netutils_unit"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'ratelimit_config'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=ratelimit_config"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'ratelimiter_refill'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=ratelimiter_refill"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'ssh_probe'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=ssh_probe"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'tls_probe'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=tls_probe"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'udp_dns'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=udp_dns"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'udp_limiter_metadata'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=udp_limiter_metadata"
+                ]
+            }
+        },
+        {
+            "name": "Debug integration test 'udp_retry'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=udp_retry"
+                ]
+            }
+        }
+    ]
+}

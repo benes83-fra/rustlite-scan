@@ -1,3 +1,0 @@
-host,ip,port,protocol,state,banner,udp_attempts,udp_retries,udp_timeouts,udp_successes,udp_packets_sent,udp_packets_received
-8.8.8.8,8.8.8.8,53,tcp,open,,1,0,0,1,0,0
-8.8.8.8,8.8.8.8,53,udp,open,"example.com. 14 IN A 23.192.228.84, example.com. 14 IN A 23.215.0.136, example.com. 14 IN A 23.215.0.138, example.com. 14 IN A 23.192.228.80, example.com. 14 IN A 23.220.75.245, example.com. 14 IN A 23.220.75.232",1,0,0,1,0,0

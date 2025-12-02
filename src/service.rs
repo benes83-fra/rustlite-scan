@@ -1,5 +1,6 @@
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServiceFingerprint {
@@ -92,5 +93,31 @@ pub fn consolidate_fingerprints(mut fps: Vec<ServiceFingerprint>) -> Option<Serv
     // normalize confidence: clamp 10..100
     if base.confidence < 10 { base.confidence = 10; }
     Some(base)
+}
+
+
+
+
+/// Consolidate multiple fingerprints per port into one per port.
+/// Keeps highest-confidence fingerprint as base and merges others.
+pub fn consolidate_by_port(fps: Vec<ServiceFingerprint>) -> Vec<ServiceFingerprint> {
+    let mut by_port: HashMap<u16, Vec<ServiceFingerprint>> = HashMap::new();
+    for fp in fps {
+        by_port.entry(fp.port).or_default().push(fp);
+    }
+
+    let mut consolidated = Vec::new();
+    for (_port, mut list) in by_port {
+        // sort by confidence desc
+        list.sort_by_key(|f| std::cmp::Reverse(f.confidence));
+        let mut base = list.remove(0);
+        for other in list {
+            base.merge(other);
+        }
+        // normalize confidence floor
+        if base.confidence < 10 { base.confidence = 10; }
+        consolidated.push(base);
+    }
+    consolidated
 }
 

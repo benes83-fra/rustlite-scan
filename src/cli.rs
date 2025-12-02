@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 
-#[derive(Parser, Debug,Clone)]
+#[derive(Parser, Debug,Clone,Default)]
 #[command(name = "rustlite-scan", about = "Fast async port scanner (TCP/UDP) in Rust")]
 pub struct Cli {
     #[arg(short, long)]
@@ -89,7 +89,8 @@ pub struct Cli {
     pub probe_timeout_ms: u64,
 
     #[structopt(long, default_value = "1")]
-    pub metrics_sample: u64, // 1 = emit all, 10 = 1/10
+    pub metrics_sample: u64,
+    pub tcp_connect_timeout_ms: i32, // 1 = emit all, 10 = 1/10
 
 
 

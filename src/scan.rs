@@ -1,37 +1,36 @@
 use crate::cli::Cli;
 use crate::netutils::{expand_targets, parse_ports};
-use crate::types::{HostResult, PortResult, UdpMetrics};
+use crate::probes::udp::UdpProbeStats;
+use crate::probes::{default_probes, ProbeHandle};
 use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
+use crate::service::ServiceFingerprint;
+use crate::types::{HostResult, PortResult, UdpMetrics};
+use crate::utils::RateLimiter;
+use anyhow::Context;
 use anyhow::Result;
+use cidr::IpCidr;
+use colored::*;
+use csv::Writer;
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::Semaphore;
-use tokio::sync::Mutex;
-use std::sync::Arc;
-use std::net::IpAddr;
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
-use colored::*;
-use serde_json::{json,Value};
-use crate::utils::RateLimiter;
-use std::fs::File;
-use std::io::{BufWriter,Write,BufReader,BufRead};
-use csv::Writer;
-use crate::probes::udp::UdpProbeStats;
-use cidr::IpCidr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{ Instant};
-use std::collections::HashMap;
-use tokio::signal;
-use std::fs;
-use anyhow::Context;
-use tokio::sync::Mutex as TokioMutex;
-use std::fs::OpenOptions;
-use crate::probes::{ProbeHandle, default_probes};
-use crate::service::ServiceFingerprint;
-use std::time::Duration;
-use std::hash::{Hash, Hasher};
+use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
-
+use std::collections::HashMap;
+use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+use tokio::signal;
+use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::Semaphore;
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
 
@@ -48,14 +47,14 @@ pub async fn write_json_line(writer: &MetricsWriter, value: &Value) -> anyhow::R
     let mut guard = writer.lock().await;
 
     // Write, newline, flush
-    guard.write_all(line.as_bytes()).context("write metric line")?;
+    guard
+        .write_all(line.as_bytes())
+        .context("write metric line")?;
     guard.write_all(b"\n").context("write newline")?;
     guard.flush().context("flush metric writer")?;
 
     Ok(())
 }
-
-
 
 pub async fn write_metric_line(writer: &MetricsWriter, value: &crate::types::ProbeEvent) {
     // Serialize on async task to avoid blocking the runtime if needed
@@ -74,7 +73,9 @@ fn load_blocklist(path: &str) -> anyhow::Result<Vec<IpCidr>> {
     let f = File::open(path)?;
     for line in BufReader::new(f).lines() {
         let l = line?.trim().to_string();
-        if l.is_empty() || l.starts_with('#') { continue; }
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
 
         // Try parse as CIDR first
         if let Ok(cidr) = l.parse::<IpCidr>() {
@@ -95,8 +96,6 @@ fn load_blocklist(path: &str) -> anyhow::Result<Vec<IpCidr>> {
     }
     Ok(out)
 }
-
-
 
 pub fn write_json_file_atomic(path: &str, value: &serde_json::Value) -> anyhow::Result<()> {
     let tmp = format!("{}.tmp", path);
@@ -120,17 +119,34 @@ pub fn write_csv_file_atomic(path: &str, hosts: &[crate::types::HostResult]) -> 
     let mut wtr = Writer::from_writer(BufWriter::new(f));
 
     wtr.write_record(&[
-        "host","ip","port","protocol","state","banner",
-        "udp_attempts","udp_retries","udp_timeouts","udp_successes",
-        "udp_packets_sent","udp_packets_received",
-        "host_limiter_pps","host_limiter_burst",
-        "global_limiter_pps","global_limiter_burst",
+        "host",
+        "ip",
+        "port",
+        "protocol",
+        "state",
+        "banner",
+        "udp_attempts",
+        "udp_retries",
+        "udp_timeouts",
+        "udp_successes",
+        "udp_packets_sent",
+        "udp_packets_received",
+        "host_limiter_pps",
+        "host_limiter_burst",
+        "global_limiter_pps",
+        "global_limiter_burst",
     ])?;
-
 
     for host in hosts {
         let (att, ret, to, succ, psent, precv) = match &host.udp_metrics {
-            Some(m) => (m.attempts, m.retries, m.timeouts, m.successes, m.packets_sent, m.packets_received),
+            Some(m) => (
+                m.attempts,
+                m.retries,
+                m.timeouts,
+                m.successes,
+                m.packets_sent,
+                m.packets_received,
+            ),
             None => (0u64, 0u64, 0u64, 0u64, 0u64, 0u64),
         };
         for port in &host.results {
@@ -157,7 +173,6 @@ pub fn write_csv_file_atomic(path: &str, hosts: &[crate::types::HostResult]) -> 
                 &global_pps.to_string(),
                 &global_burst.to_string(),
             ])?;
-
         }
     }
 
@@ -184,17 +199,34 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
 
     // Header
     wtr.write_record(&[
-        "host","ip","port","protocol","state","banner",
-        "udp_attempts","udp_retries","udp_timeouts","udp_successes",
-        "udp_packets_sent","udp_packets_received",
-        "host_limiter_pps","host_limiter_burst",
-        "global_limiter_pps","global_limiter_burst",
+        "host",
+        "ip",
+        "port",
+        "protocol",
+        "state",
+        "banner",
+        "udp_attempts",
+        "udp_retries",
+        "udp_timeouts",
+        "udp_successes",
+        "udp_packets_sent",
+        "udp_packets_received",
+        "host_limiter_pps",
+        "host_limiter_burst",
+        "global_limiter_pps",
+        "global_limiter_burst",
     ])?;
-
 
     for host in hosts {
         let (att, ret, to, succ, psent, precv) = match &host.udp_metrics {
-            Some(m) => (m.attempts, m.retries, m.timeouts, m.successes, m.packets_sent, m.packets_received),
+            Some(m) => (
+                m.attempts,
+                m.retries,
+                m.timeouts,
+                m.successes,
+                m.packets_sent,
+                m.packets_received,
+            ),
             None => (0u64, 0u64, 0u64, 0u64, 0u64, 0u64),
         };
 
@@ -222,7 +254,6 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
                 &global_pps.to_string(),
                 &global_burst.to_string(),
             ])?;
-
         }
     }
 
@@ -230,12 +261,11 @@ pub fn write_csv_file(path: &str, hosts: &[crate::types::HostResult]) -> anyhow:
     Ok(())
 }
 
-
 /// Orchestrate discovery and scanning
 pub async fn run(cli: Cli) -> Result<()> {
     let ports = parse_ports(&cli.ports)?;
     let targets = expand_targets(&cli.target)?;
-        // Safety validation
+    // Safety validation
     if cli.concurrency == 0 || cli.concurrency > 4096 {
         anyhow::bail!("--concurrency must be between 1 and 4096");
     }
@@ -243,13 +273,18 @@ pub async fn run(cli: Cli) -> Result<()> {
         anyhow::bail!("--udp-rate too large; set a lower value or use --force");
     }
     if ports.len() > 5000 && !cli.force {
-        anyhow::bail!("Too many ports specified ({}). Use --force to override.", ports.len());
+        anyhow::bail!(
+            "Too many ports specified ({}). Use --force to override.",
+            ports.len()
+        );
     }
     if targets.len() > 10_000 && !cli.force {
-        anyhow::bail!("Too many targets ({}). Use --force to override.", targets.len());
+        anyhow::bail!(
+            "Too many targets ({}). Use --force to override.",
+            targets.len()
+        );
     }
 
-    
     let global_limiter: Option<Arc<RateLimiter>> = if cli.udp_rate > 0 {
         Some(RateLimiter::new(cli.udp_rate, cli.udp_burst))
     } else {
@@ -270,7 +305,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         None
     };
 
-        // If dry-run, print planned limiter settings and exit
+    // If dry-run, print planned limiter settings and exit
     if cli.dry_run {
         println!("Dry run: planned limiter settings");
         if let Some(gl) = &global_limiter {
@@ -291,11 +326,15 @@ pub async fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-        // Load blocklist if provided
+    // Load blocklist if provided
     let blocklist: Vec<IpCidr> = if !cli.blocklist.is_empty() {
         match load_blocklist(&cli.blocklist) {
             Ok(b) => {
-                eprintln!("Loaded {} blocklist entries from {}", b.len(), &cli.blocklist);
+                eprintln!(
+                    "Loaded {} blocklist entries from {}",
+                    b.len(),
+                    &cli.blocklist
+                );
                 b
             }
             Err(e) => {
@@ -318,12 +357,13 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         });
     }
-    
+
     // Discovery
     let blocklist_arc = Arc::new(blocklist.clone());
     let alive_hosts = if cli.no_ping {
-    // filter blocklist even when skipping ping
-        targets.iter()
+        // filter blocklist even when skipping ping
+        targets
+            .iter()
             .filter(|t| {
                 if let Ok(ip) = t.parse::<std::net::IpAddr>() {
                     !is_blocked(&ip, &blocklist)
@@ -333,10 +373,15 @@ pub async fn run(cli: Cli) -> Result<()> {
             })
             .cloned()
             .collect::<Vec<_>>()
-        } else {
-        discover_hosts(&targets, cli.ping_concurrency, cli.ping_timeout_ms, blocklist_arc).await
+    } else {
+        discover_hosts(
+            &targets,
+            cli.ping_concurrency,
+            cli.ping_timeout_ms,
+            blocklist_arc,
+        )
+        .await
     };
-
 
     if cli.ping_only {
         for h in &alive_hosts {
@@ -354,7 +399,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             eprintln!("Shutdown requested, stopping scan.");
             break;
         }
-    // per-host limiter
+        // per-host limiter
         let host_limiter: Option<Arc<RateLimiter>> = if cli.udp_rate_host > 0 {
             Some(RateLimiter::new(cli.udp_rate_host, cli.udp_burst_host))
         } else {
@@ -372,12 +417,13 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.udp_retry_backoff_ms,
             global_limiter.clone(),
             host_limiter.clone(),
-            cli.host_cooldown_ms,          // NEW
-            last_sent_map.clone(),         // NEW
-            shutdown.clone(),              // OPTIONAL if you added it to signature
-            metrics_writer.clone(), 
-            cli_par
-        ).await;
+            cli.host_cooldown_ms,  // NEW
+            last_sent_map.clone(), // NEW
+            shutdown.clone(),      // OPTIONAL if you added it to signature
+            metrics_writer.clone(),
+            cli_par,
+        )
+        .await;
 
         all.push(host_result.clone());
 
@@ -404,7 +450,12 @@ pub async fn run(cli: Cli) -> Result<()> {
             let banner = r.banner.as_deref().unwrap_or("");
 
             if banner.is_empty() {
-                println!("  {} {:>5}  {}", proto.cyan(), port.to_string().bold(), state_colored);
+                println!(
+                    "  {} {:>5}  {}",
+                    proto.cyan(),
+                    port.to_string().bold(),
+                    state_colored
+                );
             } else {
                 println!(
                     "  {} {:>5}  {}  banner: {}",
@@ -444,7 +495,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     println!("{}", "Top hosts by open ports".bold());
     println!("{:40} {:>6}", "Host", "Open");
     for (host, count) in host_open_counts.iter().take(20) {
-        let host_display = if *count > 0 { host.green() } else { host.normal() };
+        let host_display = if *count > 0 {
+            host.green()
+        } else {
+            host.normal()
+        };
         println!("{:40} {:>6}", host_display, count);
     }
 
@@ -476,25 +531,22 @@ pub async fn run(cli: Cli) -> Result<()> {
         } else {
             eprintln!("Wrote CSV output to {}", &cli.csv_out);
         }
-    if !cli.json_out.is_empty() {
-        if let Err(e) = write_json_file_atomic(&cli.json_out, &out) {
-            eprintln!("Failed to write JSON file {}: {}", &cli.json_out, e);
-        } else {
-            eprintln!("Wrote JSON output to {}", &cli.json_out);
+        if !cli.json_out.is_empty() {
+            if let Err(e) = write_json_file_atomic(&cli.json_out, &out) {
+                eprintln!("Failed to write JSON file {}: {}", &cli.json_out, e);
+            } else {
+                eprintln!("Wrote JSON output to {}", &cli.json_out);
+            }
+        }
+
+        if !cli.csv_out.is_empty() {
+            if let Err(e) = write_csv_file_atomic(&cli.csv_out, &all) {
+                eprintln!("Failed to write CSV file {}: {}", &cli.csv_out, e);
+            } else {
+                eprintln!("Wrote CSV output to {}", &cli.csv_out);
+            }
         }
     }
-
-    if !cli.csv_out.is_empty() {
-        if let Err(e) = write_csv_file_atomic(&cli.csv_out, &all) {
-            eprintln!("Failed to write CSV file {}: {}", &cli.csv_out, e);
-        } else {
-            eprintln!("Wrote CSV output to {}", &cli.csv_out);
-        }
-    }
-
-        
-}
-
 
     Ok(())
 }
@@ -560,7 +612,7 @@ async fn discover_hosts(
         if let Ok((ip_str, maybe_alive)) = res {
             match maybe_alive {
                 Some(true) => alive_hosts.push(ip_str),
-                Some(false) => (), // not alive
+                Some(false) => (),                // not alive
                 None => alive_hosts.push(ip_str), // hostname fallback: keep for scanning
             }
         }
@@ -570,7 +622,6 @@ async fn discover_hosts(
     alive_hosts
 }
 
-/// Per-host scanning: calls probes from modules and aggregates per-host UDP metrics
 /// Per-host scanning: calls probes from modules and aggregates per-host UDP metrics
 pub async fn scan_host(
     ip: String,
@@ -609,7 +660,9 @@ pub async fn scan_host(
     let pb = ProgressBar::new(total);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})")
+            .template(
+                "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta})",
+            )
             .unwrap()
             .progress_chars("#>-"),
     );
@@ -638,14 +691,13 @@ pub async fn scan_host(
             // Move only per-iteration clones into the closure
             let ip_for_tcp = ip_for_tcp.clone();
             let pb_for_tcp = pb_for_tcp.clone();
-           
+
             let metrics_writer_call = metrics_writer_call.clone();
             let host_limiter_call = host_limiter_call.clone();
             let global_limiter_call = global_limiter_call.clone();
 
             async move {
                 let res = tcp_probe(&ip_for_tcp, p, tcp_to_ms).await;
-            
 
                 if let Some(w) = metrics_writer_call.clone() {
                     let event = crate::types::ProbeEvent {
@@ -693,18 +745,27 @@ pub async fn scan_host(
             tasks.push(Box::pin({
                 let ip_for_udp = ip_for_udp.clone();
                 let pb_for_udp = pb_for_udp.clone();
-                
+
                 let metrics_writer_call2 = metrics_writer_call2.clone();
                 let host_limiter_call2 = host_limiter_call2.clone();
                 let global_limiter_call2 = global_limiter_call2.clone();
 
                 async move {
                     // Clone limiters for the probe call so the probe can take ownership
-                    
+
                     let g_lim_call = global_limiter_call2.clone();
                     let h_lim_call = host_limiter_call2.clone();
 
-                    let (r, stats) = udp_probe(&ip_for_udp, p, udp_to_ms, udp_retries, udp_backoff_ms, g_lim_call, h_lim_call).await;
+                    let (r, stats) = udp_probe(
+                        &ip_for_udp,
+                        p,
+                        udp_to_ms,
+                        udp_retries,
+                        udp_backoff_ms,
+                        g_lim_call,
+                        h_lim_call,
+                    )
+                    .await;
 
                     if let Some(w) = metrics_writer_call2.clone() {
                         let event = crate::types::ProbeEvent {
@@ -758,11 +819,7 @@ pub async fn scan_host(
         }
     }
 
-
-
-
     // --- Begin probe invocation block ---
-
 
     let mut fingerprints: Vec<ServiceFingerprint> = Vec::new();
     // Only run probes if the CLI requested service probing
@@ -783,9 +840,11 @@ pub async fn scan_host(
                 for probe in probes.iter() {
                     let target_ports = probe.ports();
                     if !target_ports.is_empty() && !target_ports.contains(&port) {
+                         tracing::debug!("Running {} on non-preferred port {} (preferred: {:?})", probe.name(), port, probe.ports());
+                         println!("Skipping probe {} for port {} as it's not in preferred ports {:?}", probe.name(), port, probe.ports());
                         continue;
                     }
-
+                  
                     // clone what we need into the spawned task (clone Arcs here)
                     let probe = probe.clone();
                     let ip_clone = ip.clone();
@@ -822,49 +881,59 @@ pub async fn scan_host(
 
                         // Run the probe with a timeout
                         let probe_fut = probe.probe(&ip_clone, port, probe_timeout);
-                        let res = tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut).await;
+                        let res =
+                            tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut)
+                                .await;
 
                         match res {
                             Ok(Some(fp)) => {
+                                tracing::debug!("probe {} returned fingerprint for {}:{} -> {:?}", probe.name(), ip_clone, port, fp);
                                 // deterministic sampling: 1 in metrics_sample
                                 let emit = if metrics_sample <= 1 {
                                     true
                                 } else {
                                     let mut hasher = DefaultHasher::new();
-                                    format!("{}:{}:{}", ip_clone, port, probe.name()).hash(&mut hasher);
+                                    format!("{}:{}:{}", ip_clone, port, probe.name())
+                                        .hash(&mut hasher);
                                     (hasher.finish() % (metrics_sample as u64)) == 0
                                 };
 
                                 if emit {
                                     if let Some(w) = metrics_writer_clone {
-                                        let v = serde_json::to_value(&fp).unwrap_or(json!({"error":"serialize_failed"}));
+                                        let v = serde_json::to_value(&fp)
+                                            .unwrap_or(json!({"error":"serialize_failed"}));
                                         let _ = crate::scan::write_json_line(&w, &v).await;
                                     }
                                 }
                                 Some(fp)
                             }
-                            _ => None,
+                            Ok(None) => {
+                                tracing::debug!("probe {} returned None for {}:{}", probe.name(), ip_clone, port);
+                                None
+                            }
+                            Err(_) => {
+                                tracing::debug!("probe {} timed out for {}:{}", probe.name(), ip_clone, port);
+                                None
+                            }
                         }
+                        
                     }));
                 }
             }
 
-
             // Collect probe results (we ignore them here, but you could attach to HostResult)
-            while let Some(join_res) = probe_tasks.next().await {
-                if let Ok(Some(fp)) = join_res {
-                    // Optionally: push fingerprint into a host-level vector if you add it to HostResult
-                    fingerprints.push(fp);
+           while let Some(join_res) = probe_tasks.next().await {
+                match join_res {
+                    Ok(Some(fp)) => fingerprints.push(fp),
+                    Ok(None) => { /* nothing to do */ }
+                    Err(e) => tracing::warn!("probe task panicked: {:?}", e),
                 }
-            }
+}
         }
     }
-// --- End probe invocation block ---
+    // --- End probe invocation block ---
 
-
-
-
-
+    let fingerprints = crate::service::consolidate_by_port(fingerprints);
     pb.finish_with_message("Scan complete");
 
     // Build limiter info for diagnostics
@@ -888,8 +957,4 @@ pub async fn scan_host(
     }
 }
 
-
-
-
 // Import the per-probe stats type returned by udp_probe
-
