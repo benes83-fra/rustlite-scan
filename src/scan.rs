@@ -835,7 +835,7 @@ pub async fn scan_host(
             let probes = default_probes();
             // For each open port, run matching probes concurrently but limited by semaphore
             let mut probe_tasks = FuturesUnordered::new();
-
+            println!("Open ports: {:?}", open_ports);
             for &port in &open_ports {
                 for probe in probes.iter() {
                     let target_ports = probe.ports();

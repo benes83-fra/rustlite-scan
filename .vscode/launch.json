@@ -4,6 +4,7 @@
     // Weitere Informationen finden Sie unter https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Debug unit tests in library 'rustlite_scan'",
             "type": "lldb",
@@ -36,6 +37,24 @@
                     "--bin=rustlite-scan"
                 ]
             }
+        },
+        {
+            "name": "Debug unit tests in executable 'rustlite-scan' TLS test",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=rustlite-scan"],
+                "filter":{
+                    "name": "rustlite-scan",
+                    "kind": "bin"
+                } 
+
+                },
+            "args": ["--target","93.183.216.32",
+                     "--ports", "443","--service-probes", "1000"],
+            "cwd": "${workspaceFolder}"                  
         },
         {
             "name": "Debug integration test 'csv_roundtrip'",
@@ -133,6 +152,17 @@
                 "args": [
                     "test",
                     "--test=tls_probe"
+                ]
+            }
+        },
+          {
+            "name": "Debug integration test 'tls_smoke'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--test=TLS_smoke"
                 ]
             }
         },
