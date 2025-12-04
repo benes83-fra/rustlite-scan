@@ -46,6 +46,8 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio = { version = "1.41", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 hyper = { version = "0.14", features = ["full"] }
 rcgen = "0.9"
+rustls = "0.21"
+tokio-rustls = "0.23"
 [features]
 # test_helpers exposes small helpers used only by tests
 test_helpers = []
