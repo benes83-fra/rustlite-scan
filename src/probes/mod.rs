@@ -7,6 +7,7 @@ pub mod tls;
 pub mod ftp;
 pub mod smtp;
 pub mod dns;
+pub mod https;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
@@ -35,6 +36,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::ftp::FtpProbe {}),
         Arc::new(crate::probes::smtp::SmtpProbe {}),
         Arc::new(crate::probes::dns::DnsProbe {}),
+        Arc::new(crate::probes::https::HttpsProbe {}),
         // add more probes here
     ]
 }
