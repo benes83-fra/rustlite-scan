@@ -26,7 +26,7 @@ impl Probe for HttpsProbe {
         let mut evidence = String::new();
 
         // Build connector
-        let mut builder = SslConnector::builder(SslMethod::tls()).ok()?;
+        let builder = SslConnector::builder(SslMethod::tls()).ok()?;
         // used for debugging in conjunction with  https_probe.rs builder.set_ca_file("tests/ca.crt").unwrap(); // For test purposes, trust our self-signed cert
         let connector = builder.build();
         let mut ssl = connector.configure().ok()?.into_ssl(ip).ok()?;

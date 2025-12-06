@@ -1,8 +1,42 @@
-use super::Probe;
+use super::{Probe,BannerFields,BannerParser,format_evidence}    ;
 use crate::service::ServiceFingerprint;
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
 use std::time::Duration;
+
+
+
+
+pub struct SshBannerParser;
+
+impl BannerParser for SshBannerParser {
+    fn parse(raw: &str) -> BannerFields {
+        let trimmed = raw.trim();
+        let mut fields = BannerFields {
+            protocol: None,
+            product: None,
+            version: None,
+            comment: None,
+        };
+
+        if trimmed.starts_with("SSH-") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if let Some(first) = parts.get(0) {
+                fields.protocol = Some(first.to_string());
+                if let Some(rest) = first.strip_prefix("SSH-2.0-") {
+                    let mut pv = rest.splitn(2, '_');
+                    fields.product = pv.next().map(|s| s.to_string());
+                    fields.version = pv.next().map(|s| s.to_string());
+                }
+            }
+            if parts.len() > 1 {
+                fields.comment = Some(parts[1..].join(" "));
+            }
+        }
+        fields
+    }
+}
+
 
 pub struct SshProbe;
 
@@ -35,8 +69,28 @@ impl Probe for SshProbe {
             return None;
         }
 
+       
         let banner = String::from_utf8_lossy(&buf[..n]).to_string();
-        Some(ServiceFingerprint::from_banner(ip, port, "ssh", banner))
+        
+
+        let mut evidence = String::new();
+        
+        let fields = SshBannerParser::parse(&banner);
+        let evidence = format_evidence("ssh", fields);
+
+        Some(ServiceFingerprint {
+            host: ip.to_string(),
+            ip: ip.to_string(),
+            port,
+            protocol: "ssh".to_string(),
+            service: None,
+            version: None,
+            evidence: Some(evidence),
+            evidence_type: Some("banner".to_string()),
+            confidence: 50,
+            first_seen: chrono::Utc::now(),
+        })
+
     }
 
     fn ports(&self) -> Vec<u16> {
@@ -46,3 +100,33 @@ impl Probe for SshProbe {
         "ssh"
     }
 }
+
+
+fn parse_ssh_banner(raw: &str) -> (String, Option<String>, Option<String>, Option<String>) {
+    let trimmed = raw.trim();
+    // Default protocol
+    let mut protocol = String::new();
+    let mut product = None;
+    let mut version = None;
+    let mut comment = None;
+
+    if trimmed.starts_with("SSH-") {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if let Some(first) = parts.get(0) {
+            protocol = first.to_string();
+            // After "SSH-2.0-" comes product/version
+            if let Some(rest) = first.strip_prefix("SSH-2.0-") {
+                // e.g. "OpenSSH_9.3p1"
+                let mut pv = rest.splitn(2, '_');
+                product = pv.next().map(|s| s.to_string());
+                version = pv.next().map(|s| s.to_string());
+            }
+        }
+        if parts.len() > 1 {
+            comment = Some(parts[1..].join(" "));
+        }
+    }
+    (protocol, product, version, comment)
+}
+
+

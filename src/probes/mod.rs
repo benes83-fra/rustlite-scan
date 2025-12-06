@@ -41,3 +41,32 @@ pub fn default_probes() -> Vec<ProbeHandle> {
     ]
 }
 
+/// Normalized banner fields
+#[derive(Debug, Clone)]
+pub struct BannerFields {
+    pub protocol: Option<String>,
+    pub product: Option<String>,
+    pub version: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// Trait for banner parsers
+pub trait BannerParser {
+    fn parse(raw: &str) -> BannerFields;
+}
+pub fn format_evidence(proto_name: &str, fields: BannerFields) -> String {
+    let mut ev = String::new();
+    if let Some(p) = fields.protocol {
+        ev.push_str(&format!("{}_protocol: {}\n", proto_name.to_uppercase(), p));
+    }
+    if let Some(p) = fields.product {
+        ev.push_str(&format!("{}_product: {}\n", proto_name.to_uppercase(), p));
+    }
+    if let Some(v) = fields.version {
+        ev.push_str(&format!("{}_version: {}\n", proto_name.to_uppercase(), v));
+    }
+    if let Some(c) = fields.comment {
+        ev.push_str(&format!("{}_comment: {}\n", proto_name.to_uppercase(), c));
+    }
+    ev
+}
