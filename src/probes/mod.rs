@@ -10,10 +10,12 @@ pub mod dns;
 pub mod https;
 pub mod imap;
 pub mod pop3;
+pub mod rdp;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
 pub use tls::TlsProbe;
+pub use tls::fingerprint_tls;
 use async_trait::async_trait;
 use std::sync::Arc;
 use crate::service::ServiceFingerprint;
@@ -41,6 +43,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::https::HttpsProbe {}),
         Arc::new(crate::probes::imap::ImapProbe {}),
         Arc::new(crate::probes::pop3::Pop3Probe {}),
+        Arc::new(crate::probes::rdp::RdpProbe {}),
         // add more probes here
     ]
 }

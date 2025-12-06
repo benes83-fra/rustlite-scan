@@ -4,6 +4,9 @@ use crate::service::ServiceFingerprint;
 use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use std::net::TcpStream;
+use tokio_openssl::SslStream;
+use openssl::x509::{X509, X509Ref};
+use openssl::nid::Nid;
 use x509_parser::prelude::*;
 
 pub struct TlsProbe;
@@ -57,4 +60,70 @@ impl Probe for TlsProbe {
         "tls"
     }
 }
-// Add these imports at top of tls.rs (if not already present)
+
+pub async fn fingerprint_tls(
+    ip: &str,
+    port: u16,
+    proto_name: &str,
+    negotiation_info: String,
+    tls_stream: SslStream<tokio::net::TcpStream>,
+) -> Option<ServiceFingerprint> {
+    let mut evidence = String::new();
+    evidence.push_str(&negotiation_info);
+    evidence.push('\n');
+
+    // Extract peer certificate
+    if let Some(cert) = tls_stream.ssl().peer_certificate() {
+       // println!("Got peer certificate");
+        push_cert_info(&mut evidence, cert.as_ref());
+    } else {
+        println!("No peer certificate presented");
+    }
+    // Extract full chain
+    if let Some(chain) = tls_stream.ssl().peer_cert_chain() {
+        //println!("Chain length: {}", chain.len());
+        for (i, cert) in chain.iter().enumerate() {
+            //println!("Chain cert {} subject: {:?}", i, cert_ref.subject_name());
+            push_cert_info(&mut evidence, cert);
+           
+            evidence.push_str(&format!("TLS_chain_index: {}\n", i));
+        }
+    }
+
+    Some(ServiceFingerprint::from_banner(ip, port, proto_name, evidence))
+}
+fn push_cert_info(out: &mut String, cert: &X509Ref) {
+    // Subject CN
+    if let Some(entry) = cert.subject_name().entries_by_nid(Nid::COMMONNAME).next() {
+        if let Ok(cn) = entry.data().as_utf8() {
+            out.push_str(&format!("TLS_cert_subject_cn: {}\n", cn));
+        }
+    }
+
+    // Issuer CN
+    if let Some(entry) = cert.issuer_name().entries_by_nid(Nid::COMMONNAME).next() {
+        if let Ok(cn) = entry.data().as_utf8() {
+            out.push_str(&format!("TLS_cert_issuer_cn: {}\n", cn));
+        }
+    }
+
+    // Subject Alternative Names
+    if let Some(sans) = cert.subject_alt_names() {
+        for san in sans {
+            if let Some(dns) = san.dnsname() {
+                out.push_str(&format!("TLS_cert_san_dns: {}\n", dns));
+            }
+            if let Some(ip) = san.ipaddress() {
+                // ipaddress() returns raw bytes
+                if ip.len() == 4 {
+                    out.push_str(&format!(
+                        "TLS_cert_san_ip: {}.{}.{}.{}\n",
+                        ip[0], ip[1], ip[2], ip[3]
+                    ));
+                } else {
+                    out.push_str(&format!("TLS_cert_san_ip_hex: {:02x?}\n", ip));
+                }
+            }
+        }
+    }
+}
