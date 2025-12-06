@@ -9,6 +9,39 @@ use openssl::ssl::{SslConnector, SslMethod};
 use tokio_openssl::SslStream;
 
 use webpki_roots::TLS_SERVER_ROOTS;
+
+
+use super::{BannerFields, BannerParser, format_evidence};
+
+pub struct SmtpBannerParser;
+
+impl BannerParser for SmtpBannerParser {
+    fn parse(raw: &str) -> BannerFields {
+        let trimmed = raw.trim();
+        let mut fields = BannerFields {
+            protocol: None,
+            product: None,
+            version: None,
+            comment: None,
+        };
+
+        // Typical banner: "220 mail.example.com ESMTP Postfix"
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 && parts[0] == "220" {
+            fields.protocol = Some("SMTP".to_string());
+            // host is parts[1]
+            fields.comment = Some(parts[1].to_string());
+            // product/version often appear later
+            if parts.len() >= 3 {
+                fields.product = Some(parts[2].to_string());
+            }
+            if parts.len() >= 4 {
+                fields.version = Some(parts[3..].join(" "));
+            }
+        }
+        fields
+    }
+}
 pub struct SmtpProbe;
 
 #[async_trait]
@@ -34,8 +67,9 @@ impl Probe for SmtpProbe {
 
         // Banner
         let banner = read_chunk(&mut stream).await?;
-        let mut evidence = String::new();
-        push_line(&mut evidence, "Banner", banner.trim());
+        let fields = SmtpBannerParser::parse(&banner);
+        let mut evidence = format_evidence("smtp", fields);
+
 
         // EHLO (plain)
         stream.write_all(b"EHLO example.com\r\n").await.ok()?;

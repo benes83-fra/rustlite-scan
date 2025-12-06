@@ -1,6 +1,7 @@
 use rustlite_scan::probes;
 use rustlite_scan::probes::Probe;
 #[cfg(test)]
+
 mod tests {
     use super::*;
     use tokio::task;
