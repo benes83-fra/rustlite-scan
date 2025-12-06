@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_openssl::SslStream;
-use openssl::ssl::{SslConnector, SslMethod};
+use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use openssl::x509::X509;
 use crate::service::ServiceFingerprint;
 use super::Probe;
@@ -27,8 +27,11 @@ impl Probe for HttpsProbe {
 
         // Build connector
         let mut builder = SslConnector::builder(SslMethod::tls()).ok()?;
+        // used for debugging in conjunction with  https_probe.rs builder.set_ca_file("tests/ca.crt").unwrap(); // For test purposes, trust our self-signed cert
         let connector = builder.build();
-        let ssl = connector.configure().ok()?.into_ssl(ip).ok()?;
+        let mut ssl = connector.configure().ok()?.into_ssl(ip).ok()?;
+
+        ssl.set_verify(openssl::ssl::SslVerifyMode::NONE);
 
         // Create SslStream and handshake
         let ssl_stream = SslStream::new(ssl, tcp).ok()?;
