@@ -57,3 +57,4 @@ impl Probe for TlsProbe {
         "tls"
     }
 }
+// Add these imports at top of tls.rs (if not already present)
