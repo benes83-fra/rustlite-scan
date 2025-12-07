@@ -16,8 +16,7 @@ pub mod ldap;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
-pub use tls::TlsProbe;
-pub use tls::fingerprint_tls;
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use crate::service::ServiceFingerprint;

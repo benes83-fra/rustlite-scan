@@ -73,7 +73,7 @@ impl Probe for SshProbe {
         let banner = String::from_utf8_lossy(&buf[..n]).to_string();
         
 
-        let mut evidence = String::new();
+        
         
         let fields = SshBannerParser::parse(&banner);
         let evidence = format_evidence("ssh", fields);
@@ -101,32 +101,5 @@ impl Probe for SshProbe {
     }
 }
 
-
-fn parse_ssh_banner(raw: &str) -> (String, Option<String>, Option<String>, Option<String>) {
-    let trimmed = raw.trim();
-    // Default protocol
-    let mut protocol = String::new();
-    let mut product = None;
-    let mut version = None;
-    let mut comment = None;
-
-    if trimmed.starts_with("SSH-") {
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if let Some(first) = parts.get(0) {
-            protocol = first.to_string();
-            // After "SSH-2.0-" comes product/version
-            if let Some(rest) = first.strip_prefix("SSH-2.0-") {
-                // e.g. "OpenSSH_9.3p1"
-                let mut pv = rest.splitn(2, '_');
-                product = pv.next().map(|s| s.to_string());
-                version = pv.next().map(|s| s.to_string());
-            }
-        }
-        if parts.len() > 1 {
-            comment = Some(parts[1..].join(" "));
-        }
-    }
-    (protocol, product, version, comment)
-}
 
 

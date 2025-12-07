@@ -82,7 +82,7 @@ impl ServiceFingerprint {
 }
 /// Combine multiple fingerprints for the same host:port into a single fingerprint.
 /// Strategy: start from the highest-confidence fingerprint, merge others, and normalize.
-pub fn consolidate_fingerprints(mut fps: Vec<ServiceFingerprint>) -> Option<ServiceFingerprint> {
+pub fn _consolidate_fingerprints(mut fps: Vec<ServiceFingerprint>) -> Option<ServiceFingerprint> {
     if fps.is_empty() { return None; }
     // sort by confidence desc
     fps.sort_by_key(|f| std::cmp::Reverse(f.confidence));

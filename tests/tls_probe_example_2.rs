@@ -1,7 +1,6 @@
-use tokio_openssl::SslStream;
-use openssl::ssl::{SslConnector, SslMethod};
-use std::pin::Pin;
-use rustlite_scan::probes::tls::fingerprint_tls;
+
+
+
 #[tokio::test]
 async fn tls_probe_example_com() {
     use tokio_openssl::SslStream;

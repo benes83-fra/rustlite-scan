@@ -5,7 +5,7 @@ use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use std::net::TcpStream;
 use tokio_openssl::SslStream;
-use openssl::x509::{X509, X509Ref};
+use openssl::x509::{ X509Ref};
 use openssl::nid::Nid;
 use x509_parser::prelude::*;
 

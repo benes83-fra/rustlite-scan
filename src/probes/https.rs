@@ -5,8 +5,8 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_openssl::SslStream;
-use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use openssl::x509::X509;
+use openssl::ssl::{SslConnector, SslMethod};
+
 use crate::service::ServiceFingerprint;
 use super::Probe;
 
@@ -68,7 +68,7 @@ impl Probe for HttpsProbe {
         }
         push_line(&mut evidence, "TLS_version", pinned.ssl().version_str());
         if let Some(alpn) = pinned.ssl().selected_alpn_protocol() {
-            let alpn_str = String::from_utf8_lossy(&alpn);
+            let _alpn_str = String::from_utf8_lossy(&alpn);
             push_line(&mut evidence, "TLS_alpn", &String::from_utf8_lossy(&alpn));
         }
 

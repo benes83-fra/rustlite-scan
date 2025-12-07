@@ -68,7 +68,7 @@ impl RateLimiter {
    
     /// Perform a single refill step (useful for deterministic tests).
     /// This adds the same number of permits that the background task would add for one tick.
-    pub fn refill_once(&self) {
+    pub fn _refill_once(&self) {
         // compute ticks per second and per-tick refill consistent with new_with_tick
         let ticks_per_sec = 1000u64 / self.tick_ms.max(1);
         let per_tick = ((self.pps + ticks_per_sec - 1) / ticks_per_sec).max(1);

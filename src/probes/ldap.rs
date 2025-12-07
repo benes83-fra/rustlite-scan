@@ -1,13 +1,8 @@
-use async_trait::async_trait;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt,AsyncWriteExt};
-use std::time::Duration;
-use openssl::ssl::{SslConnector, SslMethod};
-use tokio_openssl::SslStream;
+
 
 use crate::service::ServiceFingerprint;
 use super::Probe;
-use crate::probes::tls::fingerprint_tls;
+
 use crate::probes::probe_helper::probe_exchange_tls;
 
 pub struct LdapProbe;
@@ -45,7 +40,7 @@ fn decode_ldap_response(data: &[u8]) -> String {
     if let Some(pos) = data.iter().position(|&b| b == 0x61) {
         let code = data.get(pos + 2).copied().unwrap_or(255);
         format!("LDAP_bind_response: result_code={}", code)
-    } else if let Some(pos) = data.iter().position(|&b| b == 0x78) {
+    } else if let Some(_pos) = data.iter().position(|&b| b == 0x78) {
         "LDAP_extended_response (StartTLS)".to_string()
     } else {
         format!("LDAP_raw: {:02x?}", &data[..std::cmp::min(32, data.len())])

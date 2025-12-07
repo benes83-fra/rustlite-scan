@@ -1,7 +1,7 @@
 use crate::cli::Cli;
 use crate::netutils::{expand_targets, parse_ports};
 use crate::probes::udp::UdpProbeStats;
-use crate::probes::{default_probes, ProbeHandle};
+use crate::probes::{default_probes};
 use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
 use crate::service::ServiceFingerprint;
 use crate::types::{HostResult, PortResult, UdpMetrics};
@@ -851,8 +851,8 @@ pub async fn scan_host(
                     let metrics_writer_clone = metrics_writer.clone();
                     let sem_clone = semaphore.clone();
                     let last_sent_map_clone = last_sent_map.clone(); // <-- clone here
-                    let host_limiter_clone = host_limiter.clone();
-                    let global_limiter_clone = global_limiter.clone();
+                    let _host_limiter_clone = host_limiter.clone();
+                    let _global_limiter_clone = global_limiter.clone();
                     let probe_timeout = cli.probe_timeout_ms;
                     let metrics_sample = cli.metrics_sample;
                     let host_cooldown_ms = host_cooldown_ms;

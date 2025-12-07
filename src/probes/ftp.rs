@@ -7,7 +7,6 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Instant};
 use tokio_openssl::SslStream;
 use openssl::ssl::{SslConnector, SslMethod};
-use openssl::x509::X509;
 use crate::service::ServiceFingerprint; // adapt path if needed
 use super::Probe;
 
@@ -50,7 +49,7 @@ impl Probe for FtpProbe {
                     let tcp = reader.into_inner();
 
                     // Build OpenSSL connector (reuse your tls.rs config if you want)
-                    let mut builder = match SslConnector::builder(SslMethod::tls()) {
+                    let builder = match SslConnector::builder(SslMethod::tls()) {
                         Ok(b) => b,
                         Err(e) => {
                             eprintln!("ssl builder error: {}", e);

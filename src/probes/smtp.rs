@@ -8,7 +8,6 @@ use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod};
 use tokio_openssl::SslStream;
 
-use webpki_roots::TLS_SERVER_ROOTS;
 
 
 use super::{BannerFields, BannerParser, format_evidence};

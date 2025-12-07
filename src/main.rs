@@ -6,7 +6,7 @@ mod probes;
 mod utils;
 mod service;
 use tracing_subscriber;
-use tracing_subscriber::{fmt,EnvFilter};
+use tracing_subscriber::{EnvFilter};
 use anyhow::Result;
 use cli::Cli;
 pub fn init_tracing() {

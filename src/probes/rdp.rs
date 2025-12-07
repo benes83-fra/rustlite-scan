@@ -35,7 +35,7 @@ impl Probe for RdpProbe {
         stream.write_all(&nego_request).await.ok()?;
 
         let mut buf = [0u8; 1024];
-        let n = tokio::time::timeout(Duration::from_millis(500), stream.readable()).await.ok()?;
+        let _n = tokio::time::timeout(Duration::from_millis(500), stream.readable()).await.ok()?;
         let n = stream.try_read(&mut buf).ok()?;
         if n == 0 { return None; }
 
