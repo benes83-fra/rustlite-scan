@@ -11,6 +11,8 @@ pub mod https;
 pub mod imap;
 pub mod pop3;
 pub mod rdp;
+pub mod probe_helper;
+pub mod ldap;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
@@ -44,6 +46,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::imap::ImapProbe {}),
         Arc::new(crate::probes::pop3::Pop3Probe {}),
         Arc::new(crate::probes::rdp::RdpProbe {}),
+        Arc::new(crate::probes::ldap::LdapProbe {}),
         // add more probes here
     ]
 }
