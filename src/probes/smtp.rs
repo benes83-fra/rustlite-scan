@@ -8,7 +8,7 @@ use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod};
 use tokio_openssl::SslStream;
 
-
+use crate::probes::helper::{connect_with_timeout,push_line};
 
 use super::{BannerFields, BannerParser, format_evidence};
 
@@ -46,13 +46,9 @@ pub struct SmtpProbe;
 #[async_trait]
 impl Probe for SmtpProbe {
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
-        let addr = format!("{}:{}", ip, port);
 
         // TCP connect with timeout
-        let stream = match tokio::time::timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr)).await {
-            Ok(Ok(s)) => s,
-            _ => return None,
-        };
+       let stream = connect_with_timeout(ip, port, timeout_ms).await?;
 
         // Implicit TLS (SMTPS) on 465
         if port == 465 {
@@ -71,11 +67,20 @@ impl Probe for SmtpProbe {
 
 
         // EHLO (plain)
-        stream.write_all(b"EHLO example.com\r\n").await.ok()?;
+         stream.write_all(b"EHLO example.com\r\n").await.ok()?;
         let ehlo_plain = read_multiline(&mut stream).await.unwrap_or_default();
         push_line(&mut evidence, "EHLO (plain)", ehlo_plain.trim());
-
-        // STARTTLS negotiation
+       /* if evidence.contains("STARTTLS") {
+            smtp_exchange(&mut stream, &mut evidence, "STARTTLS reply", "STARTTLS\r\n").await;
+             // STARTTLS negotiation
+            if evidence.contains("220") {
+                let sni = extract_sni_hint(ip, Some(&banner));
+                if let Ok(tls_stream) = upgrade_to_tls(stream, sni).await {
+                    return fingerprint_smtp_tls_with_evidence(ip, port, tls_stream, evidence).await;
+                }
+            }
+        }
+        */
         if ehlo_plain.contains("STARTTLS") {
             stream.write_all(b"STARTTLS\r\n").await.ok()?;
             let starttls_reply = read_multiline(&mut stream).await.unwrap_or_default();
@@ -101,6 +106,8 @@ impl Probe for SmtpProbe {
 }
 
 // Upgrade a TcpStream to TLS via OpenSSL (tokio-openssl requires Pin and async connect)
+
+
 async fn upgrade_to_tls(stream: TcpStream, sni: String) -> Result<SslStream<TcpStream>, ()> {
     let connector = SslConnector::builder(SslMethod::tls()).map_err(|_| ())?.build();
     let ssl = connector.configure().map_err(|_| ())?
@@ -152,6 +159,8 @@ async fn fingerprint_smtp_tls_with_evidence(
 
     Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence))
 }
+
+
 
 
 // Simple chunk readers
@@ -249,9 +258,3 @@ fn extract_sni_hint(ip: &str, banner_opt: Option<&str>) -> String {
     }
 }
 
-fn push_line(out: &mut String, label: &str, value: &str) {
-    if !out.is_empty() { out.push('\n'); }
-    out.push_str(label);
-    out.push_str(": ");
-    out.push_str    (value);
-}

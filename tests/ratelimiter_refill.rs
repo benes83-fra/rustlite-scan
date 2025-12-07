@@ -23,7 +23,7 @@ async fn ratelimiter_refill_behaviour() {
     tokio::task::yield_now().await;
 
     // Now perform a deterministic refill (no virtual-time advance needed)
-    rl.refill_once();
+    rl._refill_once();
 
     // Allow the spawned task to run
     tokio::task::yield_now().await;
