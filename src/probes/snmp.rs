@@ -267,7 +267,7 @@ impl SnmpProbe {
                     let content = &slice[content_off .. content_off + len];
                     if content == oid_bytes {
                         // Found OID; look for the next TLV after this OID within the parent slice
-                        let mut j = content_off + len;
+                        let  j = content_off + len;
                         if j + 1 >= slice.len() { return None; }
                         let val_tag = slice[j];
                         let val_len_info = SnmpProbe::read_len(slice, j + 1)?;

@@ -14,6 +14,7 @@ pub mod rdp;
 pub mod helper;
 pub mod ldap;
 pub mod snmp;
+pub mod smb;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
@@ -48,6 +49,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::rdp::RdpProbe {}),
         Arc::new(crate::probes::ldap::LdapProbe {}),
         Arc::new(crate::probes::snmp::SnmpProbe{}),
+        Arc::new(crate::probes::smb::SmbProbe{}),
         // add more probes here
     ]
 }
