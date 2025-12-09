@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration, sleep};
 use rand::{Rng, SeedableRng};
@@ -281,51 +280,125 @@ impl SmbProbe {
     /// Returns (dialect_hex, server_guid_hex, ascii_strings)
     /// Improved SMB2 negotiate response parser (robust, heuristic).
     /// Returns (dialect_hex_opt, server_guid_hex_opt, ascii_strings).
-    fn parse_smb2_negotiate_response(resp: &[u8]) -> (Option<String>, Option<String>, Vec<String>) {
-        // Quick sanity: must contain SMB2 signature somewhere
-        let sig_off = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
-        if sig_off.is_none() {
-            // no SMB2 signature; fallback to ascii extraction
-            let ascii = SmbProbe::extract_ascii_strings(resp);
-            return (None, None, ascii);
+    /// Map common SMB2 dialect hex values to friendly names.
+    pub fn smb2_dialect_name(dialect_hex: &str) -> Option<&'static str> {
+        println! ("Dialect_Hex :{:?}",dialect_hex);
+        match dialect_hex {
+            "0x0202" => Some("SMB 2.0.2"),
+            "0x0210" => Some("SMB 2.1"),
+            "0x0300" => Some("SMB 3.0"),
+            "0x0302" => Some("SMB 3.0.2"),
+            "0x0311" => Some("SMB 3.1.1"),
+            _ => None,
         }
-        let sig_off = sig_off.unwrap();
+    }
 
-        // 1) Try to find a likely Server GUID: scan for a 16-byte window that is not all zeros or all 0xFF.
+    /// Spec-aware SMB2 NEGOTIATE parser.
+    /// Returns (dialect_hex_opt, dialect_name_opt, server_guid_opt, capabilities_vec, ascii_strings)
+    fn parse_smb2_negotiate_spec(resp: &[u8]) -> (Option<String>, Option<String>, Option<String>, Vec<String>, Vec<String>) {
+        // 1) find SMB2 signature (0xFE 'S' 'M' 'B')
+        let payload_len = if resp.len() >= 4 {
+            ((resp[1] as usize) << 16) | ((resp[2] as usize) << 8) | (resp[3] as usize)
+        } else {
+            0usize
+        };
+        let total_len = resp.len();
+        if DEBUG { eprintln!("SMB: total recv bytes = {}, netbios payload_len = {}", total_len, payload_len); }
+        let sig_pos = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
+        if sig_pos.is_none() {
+            eprintln!("SMB: no SMB2 signature found");
+            // no SMB2 signature: fallback to ascii extraction
+            let ascii = SmbProbe::extract_ascii_strings(resp);
+            return (None, None, None, Vec::new(), ascii);
+        }
+        let sig_off = sig_pos.unwrap();
+        let body_off = sig_off + 4 + 64;
+        let mut dialect_hex: Option<String> = None;
+        let available_body = if payload_len > 64 { payload_len - 64 } else { 0 };
+        if DEBUG { eprintln!("SMB: body_off = {}, available_body = {}", body_off, available_body); }
+        if available_body >= 6 && total_len >=body_off + 6{
+            let dialect_le = u16::from_le_bytes([resp[body_off + 4], resp[body_off + 5]]);
+            if let dialect_hex1 = format!("0x{:04x}", dialect_le){
+                eprintln!("SMB: precise dialect read = {}", dialect_hex1);
+            }
+        }else {
+        // 2) dialect detection: scan for known dialect u16 values (little-endian) in the response
+            let known_dialects: [u16;5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
+            
+            let payload_start = 4usize;
+            let payload_end = std::cmp::min(total_len, 4 + payload_len);
+            if DEBUG { eprintln!("SMB: constrained scan payload window {}..{}", payload_start, payload_end); }
+            
+            for i in (sig_off + 4)..resp.len().saturating_sub(1) {
+                let v = u16::from_le_bytes([resp[i], resp[i+1]]);
+                
+                if known_dialects.contains(&v) {
+                    dialect_hex = Some(format!("0x{:04x}", v));
+                    break;
+                }
+            }
+            if let Some(ref dh) = dialect_hex {
+                eprintln!("SMB: dialect found by constrained scan = {}", dh);
+                // record dh...
+            } else {
+                eprintln!("SMB: dialect not found (payload too short for precise parse)");
+                // record unknown dialect
+            }
+        }
+        // 3) server GUID extraction: scan for a 16-byte window that is not all zeros/FF and has some entropy
         let mut server_guid: Option<String> = None;
         for i in sig_off..resp.len().saturating_sub(15) {
             let window = &resp[i..i+16];
             let all_zero = window.iter().all(|&b| b == 0);
             let all_ff = window.iter().all(|&b| b == 0xFF);
-            if !all_zero && !all_ff {
-                // Heuristic: treat this as a GUID if it contains at least 4 printable or nontrivial bytes
-                let nontrivial = window.iter().filter(|&&b| b != 0 && b != 0xFF).count();
-                if nontrivial >= 4 {
-                    let hex = window.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
-                    server_guid = Some(hex);
-                    break;
-                }
-            }
-        }
-
-        // 2) Try to find a negotiated dialect by scanning for common dialect values (little-endian)
-        let mut dialect: Option<String> = None;
-        let known: [u16;5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
-        let search_start = sig_off + 4; // start after signature
-        for i in search_start..resp.len().saturating_sub(1) {
-            let v = u16::from_le_bytes([resp[i], resp[i+1]]);
-            if known.contains(&v) {
-                dialect = Some(format!("0x{:04x}", v));
+            if all_zero || all_ff { continue; }
+            // require at least 4 nontrivial bytes to avoid false positives
+            let nontrivial = window.iter().filter(|&&b| b != 0 && b != 0xFF).count();
+            if nontrivial >= 4 {
+                let hex = window.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
+                server_guid = Some(hex);
                 break;
             }
         }
 
-        // 3) Extract printable ASCII substrings as before
-        let ascii = SmbProbe::extract_ascii_strings(resp);
+        // 4) capabilities detection: scan for any 4-byte little-endian value and test known capability bits
+        // Known SMB2 global capability bits (common values)
+        let capability_map: &[(u32, &str)] = &[
+            (0x00000001, "DFS"),                 // SMB2_GLOBAL_CAP_DFS
+            (0x00000002, "LEASING"),             // SMB2_GLOBAL_CAP_LEASING
+            (0x00000004, "LARGE_MTU"),           // SMB2_GLOBAL_CAP_LARGE_MTU
+            (0x00000008, "MULTI_CHANNEL"),       // SMB2_GLOBAL_CAP_MULTI_CHANNEL
+            (0x00000010, "PERSISTENT_HANDLES"),  // SMB2_GLOBAL_CAP_PERSISTENT_HANDLES
+            (0x00000020, "DIRECTORY_LEASING"),   // SMB2_GLOBAL_CAP_DIRECTORY_LEASING
+            (0x00000040, "ENCRYPTION"),          // SMB2_GLOBAL_CAP_ENCRYPTION (common flag)
+        ];
+        let mut capabilities_found: Vec<String> = Vec::new();
+        // scan windows of 4 bytes and test bits
+        for i in sig_off..resp.len().saturating_sub(3) {
+            let v = u32::from_le_bytes([resp[i], resp[i+1], resp[i+2], resp[i+3]]);
+            if v == 0 { continue; }
+            for &(mask, name) in capability_map {
+                if (v & mask) != 0 {
+                    if !capabilities_found.iter().any(|s| s == name) {
+                        capabilities_found.push(name.to_string());
+                    }
+                }
+            }
+            if !capabilities_found.is_empty() {
+                break; // stop after first plausible capability word found
+            }
+        }
 
-        (dialect, server_guid, ascii)
+        // 5) ASCII substrings for additional evidence
+        let ascii = SmbProbe::extract_ascii_strings(resp);
+        println!("About to check for dialectname...Hey at {:?}", dialect_hex);
+        // 6) friendly dialect name lookup
+        let dialect_name = dialect_hex.as_ref().and_then(|h| Self::smb2_dialect_name(h).map(|s| s.to_string()));
+
+        (dialect_hex, dialect_name, server_guid, capabilities_found, ascii)
     }
 
+    
 
 }
 
@@ -354,19 +427,18 @@ impl Probe for SmbProbe {
                         if DEBUG { eprintln!("SMB: sending SMB2 negotiate ({} bytes) to {}", req2.len(), addr); }
                         if let Some(resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await {
                             // parse SMB2 response
-                            let (dialect_opt, guid_opt, ascii) = SmbProbe::parse_smb2_negotiate_response(&resp2);
-                            if let Some(d) = dialect_opt {
-                                push_line(&mut evidence, "SMB2_dialect", &d);
-                            }
-                            if let Some(g) = guid_opt {
-                                push_line(&mut evidence, "SMB2_server_guid", &g);
+                            let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp2);
+
+                            if let Some(dh) = dialect_hex { push_line(&mut evidence, "SMB2_dialect", &dh); }
+                            if let Some(dn) = dialect_name { push_line(&mut evidence, "SMB2_dialect_name", &dn); }
+                            if let Some(g) = server_guid { push_line(&mut evidence, "SMB2_server_guid", &g); }
+                            if !capabilities.is_empty() {
+                                push_line(&mut evidence, "SMB2_capabilities", &capabilities.join(", "));
                             }
                             for s in ascii {
                                 push_line(&mut evidence, "SMB2_ascii", &s);
                             }
-                            if evidence.is_empty() {
-                                push_line(&mut evidence, "SMB_probe", "smb2_no_useful_fields");
-                            }
+
                             return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
                         } else {
                             // still no response from SMB2 either
