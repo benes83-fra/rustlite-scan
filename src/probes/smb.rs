@@ -1,5 +1,6 @@
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration, sleep};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use crate::service::ServiceFingerprint;
@@ -31,7 +32,7 @@ impl SmbProbe {
         // Protocol: 0xFF 'S' 'M' 'B'
         // Command: 0x72 (Negotiate)
         // Rest: mostly zeros for a minimal request
-        let mut smb_header = vec![
+        let smb_header = vec![
             0xFF, b'S', b'M', b'B', // protocol
             0x72, // command: Negotiate
             0x00, 0x00, 0x00, 0x00, // status
@@ -318,9 +319,9 @@ impl SmbProbe {
         if DEBUG { eprintln!("SMB: body_off = {}, available_body = {}", body_off, available_body); }
         if available_body >= 6 && total_len >=body_off + 6{
             let dialect_le = u16::from_le_bytes([resp[body_off + 4], resp[body_off + 5]]);
-            if let dialect_hex1 = format!("0x{:04x}", dialect_le){
-                eprintln!("SMB: precise dialect read = {}", dialect_hex1);
-            }
+            let dialect_hex1 = format!("0x{:04x}", dialect_le);
+            eprintln!("SMB: precise dialect read = {}", dialect_hex1);
+            
         }else {
         // 2) dialect detection: scan for known dialect u16 values (little-endian) in the response
             let known_dialects: [u16;5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
@@ -399,8 +400,296 @@ impl SmbProbe {
     }
 
     
+    /// Read NetBIOS header then exact SMB2 payload from the stream.
+    async fn read_smb2_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut nb = [0u8; 4];
+        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: waiting for NetBIOS header"); }
 
+        let to = Duration::from_millis(timeout_ms);
+        timeout(to, stream.read_exact(&mut nb)).await??;
+        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: netbios header = {:02x?}", nb); }
+
+        let len = ((nb[1] as usize) << 16) | ((nb[2] as usize) << 8) | (nb[3] as usize);
+        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: payload length = {}", len); }
+        let mut payload = vec![0u8; len];
+        timeout(to, stream.read_exact(&mut payload)).await??;
+        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: read payload {} bytes", payload.len()); }
+        let mut full = Vec::with_capacity(4 + len);
+        full.extend_from_slice(&nb);
+        full.extend_from_slice(&payload);
+        Ok(full)
+    }
+
+    /// Parse SMB2 header for Status, MessageId, SessionId, TreeId.
+    /// Returns (status_opt, message_id_opt, session_id_opt, tree_id_opt)
+    fn parse_smb2_header(resp: &[u8]) -> (Option<u32>, Option<u64>, Option<u64>, Option<u32>) {
+        let sig_pos = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
+        if sig_pos.is_none() { return (None, None, None, None); }
+        let off = sig_pos.unwrap();
+        if resp.len() < off + 64 { return (None, None, None, None); }
+        // right after finding sig_pos and off
+        if DEBUG {
+            eprintln!("SMB-IPC: parse_smb2_header: sig_off = {}, total_len = {}", off, resp.len());
+            eprintln!("SMB-IPC: parse_smb2_header: header preview = {:02x?}", &resp[off..std::cmp::min(resp.len(), off+64)]);
+        }
+
+        // Status (4 bytes) at header offset 8..12 (little-endian)
+        let status = u32::from_le_bytes([resp[off + 8], resp[off + 9], resp[off + 10], resp[off + 11]]);
+        // MessageId at off+28..off+36 (u64 LE)
+        let message_id = u64::from_le_bytes([
+            resp[off + 28], resp[off + 29], resp[off + 30], resp[off + 31],
+            resp[off + 32], resp[off + 33], resp[off + 34], resp[off + 35],
+        ]);
+        // TreeId at off+24..off+28 (u32 LE)
+        let tree_id = u32::from_le_bytes([resp[off + 24], resp[off + 25], resp[off + 26], resp[off + 27]]);
+        // SessionId at off+40..off+48 (u64 LE)
+        let session_id = u64::from_le_bytes([
+            resp[off + 40], resp[off + 41], resp[off + 42], resp[off + 43],
+            resp[off + 44], resp[off + 45], resp[off + 46], resp[off + 47],
+        ]);
+        (Some(status), Some(message_id), Some(session_id), Some(tree_id))
+    }
+
+    /// Build a minimal SMB2 SESSION_SETUP request with an empty security buffer (anonymous).
+    /// message_id should be unique per connection; session_id is 0 for initial setup.
+    /// Build a minimal, well-formed SMB2 SESSION_SETUP request with computed offsets.
+    /// - message_id: unique per connection (u64)
+    /// - session_id: 0 for initial session setup
+    /// - security_blob: raw security blob (can be empty)
+    fn build_smb2_session_setup(message_id: u64, session_id: u64, security_blob: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::new();
+
+        // SMB2 header (64 bytes)
+        payload.extend_from_slice(&[0xFE, b'S', b'M', b'B']); // protocol
+        payload.extend_from_slice(&0x0040u16.to_le_bytes()); // StructureSize = 64
+        payload.extend_from_slice(&[0u8; 2]); // CreditCharge + ChannelSequence
+        payload.extend_from_slice(&[0u8; 4]); // Reserved
+        payload.extend_from_slice(&0x0001u16.to_le_bytes()); // Command = 1 (SESSION_SETUP)
+        payload.extend_from_slice(&[0u8; 2]); // CreditsRequested + Flags
+        payload.extend_from_slice(&[0u8; 4]); // NextCommand + Reserved
+        payload.extend_from_slice(&message_id.to_le_bytes()); // MessageId (8)
+        payload.extend_from_slice(&[0u8; 4]); // Reserved2
+        payload.extend_from_slice(&0u32.to_le_bytes()); // TreeId (4)
+        payload.extend_from_slice(&session_id.to_le_bytes()); // SessionId (8)
+        payload.extend_from_slice(&[0u8; 16]); // Signature
+
+        // Now build the SESSION_SETUP body and compute offsets relative to SMB2 header start
+        // SMB2 header start index (relative to payload vector) is 0
+        let smb2_header_len = 64usize;
+        // Body starts immediately after header
+        let body_start = payload.len(); // should be 64
+
+        // StructureSize (2) = 25
+        payload.extend_from_slice(&0x0019u16.to_le_bytes());
+
+        // Flags (1) + SecurityMode (1)
+        payload.extend_from_slice(&[0x00u8, 0x00u8]);
+
+        // Capabilities (4)
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        // Channel (4) placeholder
+        payload.extend_from_slice(&0u32.to_le_bytes());
+
+        // We'll append the security blob immediately after the body.
+        // Compute SecurityBufferOffset relative to SMB2 header start (i.e., body_start + current body length)
+        // Current body length so far: StructureSize(2) + Flags(1)+SecurityMode(1) + Capabilities(4) + Channel(4) = 12
+        let security_buffer_offset = (smb2_header_len + 12) as u16;
+        let security_buffer_length = security_blob.len() as u16;
+
+        // Write SecurityBufferOffset (2) and SecurityBufferLength (2)
+        payload.extend_from_slice(&security_buffer_offset.to_le_bytes());
+        payload.extend_from_slice(&security_buffer_length.to_le_bytes());
+
+        // PreviousSessionId (8)
+        payload.extend_from_slice(&0u64.to_le_bytes());
+
+        // Append the security blob (may be empty)
+        payload.extend_from_slice(security_blob);
+
+        // Prefix with NetBIOS header (4 bytes: 0x00 + 3-byte big-endian length)
+        let len = payload.len();
+        let mut netbios = vec![0x00u8];
+        netbios.extend_from_slice(&((len as u32).to_be_bytes()[1..])); // 3 bytes length
+
+        let mut pkt = Vec::with_capacity(4 + len);
+        pkt.extend_from_slice(&netbios);
+        pkt.extend_from_slice(&payload);
+        pkt
+    }
+
+
+    /// Build a minimal SMB2 TREE_CONNECT request for \\<host>\IPC$ using given session_id.
+    /// path_utf16le should be the UTF-16LE encoded path bytes.
+    /// Build a minimal, well-formed SMB2 TREE_CONNECT request for \\<host>\IPC$.
+    /// - message_id: unique per connection
+    /// - session_id: session id returned by server (or 0)
+    /// - path_utf16le: UTF-16LE encoded path bytes (e.g., "\\\\1.2.3.4\\IPC$")
+    fn build_smb2_tree_connect(message_id: u64, session_id: u64, path_utf16le: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::new();
+
+        // SMB2 header (64 bytes)
+        payload.extend_from_slice(&[0xFE, b'S', b'M', b'B']);
+        payload.extend_from_slice(&0x0040u16.to_le_bytes()); // StructureSize
+        payload.extend_from_slice(&[0u8; 2]);
+        payload.extend_from_slice(&[0u8; 4]);
+        payload.extend_from_slice(&0x0003u16.to_le_bytes()); // Command = 3 (TREE_CONNECT)
+        payload.extend_from_slice(&[0u8; 2]);
+        payload.extend_from_slice(&[0u8; 4]);
+        payload.extend_from_slice(&message_id.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 4]);
+        payload.extend_from_slice(&0u32.to_le_bytes()); // TreeId (0 for request)
+        payload.extend_from_slice(&session_id.to_le_bytes());
+        payload.extend_from_slice(&[0u8; 16]); // Signature
+
+        // Body starts after header
+        let smb2_header_len = 64usize;
+        let body_start = payload.len(); // 64
+
+        // StructureSize (2) = 9
+        payload.extend_from_slice(&0x0009u16.to_le_bytes());
+
+        // Flags (1)
+        payload.push(0u8);
+
+        // PathOffset and PathLength placeholders will be written now (we compute actual values)
+        // Path will be appended immediately after the body.
+        // Body fields so far: StructureSize(2) + Flags(1) + PathOffset(2) + PathLength(2) = 7 bytes
+        // PathOffset should point to the start of the path relative to SMB2 header start.
+        let path_offset = (smb2_header_len + 7) as u16;
+        let path_length = path_utf16le.len() as u16;
+
+        payload.extend_from_slice(&path_offset.to_le_bytes());
+        payload.extend_from_slice(&path_length.to_le_bytes());
+
+        // Append the path bytes
+        payload.extend_from_slice(path_utf16le);
+
+        // Prefix with NetBIOS header
+        let len = payload.len();
+        let mut netbios = vec![0x00u8];
+        netbios.extend_from_slice(&((len as u32).to_be_bytes()[1..]));
+
+        let mut pkt = Vec::with_capacity(4 + len);
+        pkt.extend_from_slice(&netbios);
+        pkt.extend_from_slice(&payload);
+        pkt
+    }
+
+
+    /// Encode Rust string to UTF-16LE bytes for tree connect path.
+    fn encode_utf16le(s: &str) -> Vec<u8> {
+        let utf16: Vec<u16> = s.encode_utf16().collect();
+        let mut out = Vec::with_capacity(utf16.len() * 2);
+        for w in utf16 {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
+
+    /// Additive, opt-in sequence: Negotiate -> anonymous SessionSetup -> TreeConnect to IPC$.
+    /// - addr: "ip:445"
+    /// - timeout_ms: per-operation timeout
+    /// - evidence: mutable String (use your push_line helper to append)
+    pub async fn probe_smb_sequence(addr: &str, timeout_ms: u64, evidence: &mut String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Connect once and reuse
+        let conn_timeout = Duration::from_millis(timeout_ms);
+        let mut stream = timeout(conn_timeout, TcpStream::connect(addr)).await??;
+
+        // 1) NEGOTIATE (reuse your builder)
+        let negotiate = SmbProbe::build_smb2_negotiate();
+        if DEBUG { eprintln!("SMB-IPC: sending negotiate ({} bytes) to {}", negotiate.len(), addr); }
+        stream.write_all(&negotiate).await?;
+        let resp_negotiate = SmbProbe::read_smb2_response(&mut stream, timeout_ms).await?;
+        if DEBUG { eprintln!("SMB-IPC: negotiate recv {} bytes", resp_negotiate.len()); }
+
+        // Parse and record lightweight negotiate evidence using your existing parser
+        let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp_negotiate);
+        if let Some(dh) = dialect_hex { push_line(evidence, "SMB2_dialect", &dh); }
+        if let Some(dn) = dialect_name { push_line(evidence, "SMB2_dialect_name", &dn); }
+        if let Some(g) = server_guid { push_line(evidence, "SMB2_server_guid", &g); }
+        if !capabilities.is_empty() { push_line(evidence, "SMB2_capabilities", &capabilities.join(", ")); }
+        for s in ascii { push_line(evidence, "SMB2_ascii", &s); }
+
+        // 2) SESSION_SETUP (anonymous)
+        let session_msgid: u64 = 1;
+        let session_setup = SmbProbe::build_smb2_session_setup(session_msgid, 0, &[]);
+        // After attempting session setup and detecting a non-success status or connection close:
+       
+        if DEBUG { eprintln!("SMB-IPC: sending session_setup"); }
+        stream.write_all(&session_setup).await?;
+        let resp_session = match SmbProbe::read_smb2_response(&mut stream, timeout_ms).await{
+            Ok(sess) =>   {
+                                    eprintln!("SMB-IPC: session_setup recv {} bytes", sess.len());
+                                    sess
+            },
+                
+          
+            Err(s)   =>{
+                        push_line( evidence, "SMB2_session_ok", "false");
+                        push_line( evidence, "SMB2_session_denied", "anonymous_not_allowed");
+                        eprintln!("SMB-IPC: session_setup close because no anonymous login");
+                        return Err(s);
+                        
+            },
+        };
+        
+        
+        
+        if DEBUG { eprintln!("SMB-IPC: session_setup recv {} bytes", resp_session.len()); }
+        let (status_opt, _msgid_opt, session_id_opt, _treeid_opt) = SmbProbe::parse_smb2_header(&resp_session);
+
+        if let Some(status) = status_opt {
+            if status == 0 {
+                push_line(evidence, "SMB2_session_ok", "true");
+                if let Some(sid) = session_id_opt {
+                    push_line(evidence, "SMB2_session_id", &format!("0x{:016x}", sid));
+                }
+            } else {
+                push_line(evidence, "SMB2_session_ok", "false");
+                push_line(evidence, "SMB2_session_status", &format!("0x{:08x}", status));
+                // stop here if session denied
+                return Ok(());
+            }
+        } else {
+            push_line(evidence, "SMB2_session_ok", "unknown");
+            return Ok(());
+        }
+
+        // 3) TREE_CONNECT to \\<host>\IPC$
+        let session_id = session_id_opt.unwrap_or(0);
+        let host = addr.split(':').next().unwrap_or(addr);
+        let path = format!("\\\\{}\\IPC$", host);
+        let path_utf16le = SmbProbe::encode_utf16le(&path);
+        let tree_msgid: u64 = 2;
+        let tree_connect = SmbProbe::build_smb2_tree_connect(tree_msgid, session_id, &path_utf16le);
+        if DEBUG { eprintln!("SMB-IPC: sending tree_connect to {}", path); }
+        stream.write_all(&tree_connect).await?;
+        let resp_tree = SmbProbe::read_smb2_response(&mut stream, timeout_ms).await?;
+        if DEBUG { eprintln!("SMB-IPC: tree_connect recv {} bytes", resp_tree.len()); }
+        let (status_tree_opt, _msgid_tree, _session_after, tree_id_opt) = SmbProbe::parse_smb2_header(&resp_tree);
+
+        if let Some(st) = status_tree_opt {
+            if st == 0 {
+                push_line(evidence, "SMB2_tree_ipc_ok", "true");
+                if let Some(tid) = tree_id_opt {
+                    push_line(evidence, "SMB2_tree_id", &format!("{}", tid));
+                }
+            } else {
+                push_line(evidence, "SMB2_tree_ipc_ok", "false");
+                push_line(evidence, "SMB2_tree_status", &format!("0x{:08x}", st));
+            }
+        } else {
+            push_line(evidence, "SMB2_tree_ipc_ok", "unknown");
+        }
+
+        Ok(())
+    }
 }
+// ---------------------- End additive SMB2 IPC probe ----------------------
+
+
+
 
 #[async_trait::async_trait]
 impl Probe for SmbProbe {
@@ -422,6 +711,7 @@ impl Probe for SmbProbe {
             None => {
                 // no response: record that we attempted and move on
                 // If SMB1 attempt produced no useful response or connection was closed, try SMB2 negotiate
+                       
                         if DEBUG { eprintln!("SMB: trying SMB2 negotiate fallback"); }
                         let req2 = SmbProbe::build_smb2_negotiate();
                         if DEBUG { eprintln!("SMB: sending SMB2 negotiate ({} bytes) to {}", req2.len(), addr); }
@@ -438,7 +728,13 @@ impl Probe for SmbProbe {
                             for s in ascii {
                                 push_line(&mut evidence, "SMB2_ascii", &s);
                             }
-
+                             let enable_ipc_probe = true; // flip to false to disable
+                            if enable_ipc_probe {
+                                if let Err(e) = SmbProbe::probe_smb_sequence(&addr, timeout_ms, &mut evidence).await {
+                                    eprintln!("SMB IPC probe failed: {}", e);
+                                }
+                            }
+                            
                             return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
                         } else {
                             // still no response from SMB2 either
