@@ -15,6 +15,7 @@ pub mod helper;
 pub mod ldap;
 pub mod snmp;
 pub mod smb;
+pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;

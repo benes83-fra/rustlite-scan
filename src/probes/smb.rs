@@ -6,9 +6,8 @@ use rand::rngs::StdRng;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::helper::push_line;
+use crate::probes::nbns_helper;
 
-/// Minimal SMB probe: negotiate and extract lightweight evidence.
-/// - Connects to TCP/445
 /// - Sends a conservative SMB1 Negotiate request (dialect "NT LM 0.12")
 /// - Detects SMB1 vs SMB2/3 by response signature
 /// - Extracts ASCII evidence strings and any SMB2 GUID-like bytes
@@ -728,19 +727,41 @@ impl Probe for SmbProbe {
                             for s in ascii {
                                 push_line(&mut evidence, "SMB2_ascii", &s);
                             }
-                             let enable_ipc_probe = true; // flip to false to disable
+                            
+                            let enable_ipc_probe = true; // flip to false to disable
                             if enable_ipc_probe {
                                 if let Err(e) = SmbProbe::probe_smb_sequence(&addr, timeout_ms, &mut evidence).await {
                                     eprintln!("SMB IPC probe failed: {}", e);
                                 }
-                            }
-                            
+                            }/*
+                            match nbns_helper::nbns_query(ip, 1500).await {
+                            Ok(res) => {
+                                if res.names.is_empty() && res.unit_id.is_none() {
+                                    eprintln! ("No name found so no response");
+                                    push_line(&mut evidence, "NBNS", "no_response");
+                                } else {
+                                    for (i, n) in res.names.iter().enumerate() {
+                                        eprintln!("Found some stuff!!!");
+                                        push_line(&mut evidence, &format!("NBNS_name_{}", i), &format!("{} (type=0x{:02x}, flags=0x{:04x})", n.name, n.name_type, n.flags));
+                                    }
+                                    if let Some(mac) = res.unit_id {
+                                        eprintln!("We got some macs!");
+                                        push_line(&mut evidence, "NBNS_unit_id", &format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]));
+                                    }
+                                }
+                                }
+                                Err(e) => {
+                                    eprintln!("We made a mistake {}", e);
+                                    push_line(&mut evidence, "NBNS", &format!("error: {}", e));
+                                }
+                            }*/
+
                             return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
                         } else {
                             // still no response from SMB2 either
                             push_line(&mut evidence, "SMB_probe", "no_response");
                             return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
-}
+                        }
 
             }
         };
