@@ -716,6 +716,7 @@ impl Probe for SmbProbe {
                         if DEBUG { eprintln!("SMB: sending SMB2 negotiate ({} bytes) to {}", req2.len(), addr); }
                         if let Some(resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await {
                             // parse SMB2 response
+                            /* 
                             let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp2);
 
                             if let Some(dh) = dialect_hex { push_line(&mut evidence, "SMB2_dialect", &dh); }
@@ -726,7 +727,7 @@ impl Probe for SmbProbe {
                             }
                             for s in ascii {
                                 push_line(&mut evidence, "SMB2_ascii", &s);
-                            }
+                            }*/
                             
                             let enable_ipc_probe = true; // flip to false to disable
                             if enable_ipc_probe {

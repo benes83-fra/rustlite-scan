@@ -32,7 +32,7 @@ indicatif = "0.17"
 # Optional: colored output for friendlier CLI
 colored = "2.1"
 csv = "1.2"
-
+bytes ="1.11"
 trust-dns-proto = "0.23"
 
 chrono = { version = "0.4", features = ["serde"] }

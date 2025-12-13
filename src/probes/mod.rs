@@ -16,6 +16,7 @@ pub mod ldap;
 pub mod snmp;
 pub mod nbns;
 pub mod smb;
+pub mod postgres;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -53,6 +54,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::snmp::SnmpProbe{}),
         Arc::new(crate::probes::smb::SmbProbe{}),
         Arc::new(crate::probes::nbns::NbnsProbe{}),
+        Arc::new(crate::probes::postgres::PostgresProbe{}),
         // add more probes here
     ]
 }
