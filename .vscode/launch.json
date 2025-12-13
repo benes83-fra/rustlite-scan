@@ -56,6 +56,24 @@
                      "--ports", "443","--service-probes", "1000"],
             "cwd": "${workspaceFolder}"                  
         },
+          {
+            "name": "Debug unit tests in executable 'rustlite-scan' SMB test",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=rustlite-scan"],
+                "filter":{
+                    "name": "rustlite-scan",
+                    "kind": "bin"
+                } 
+
+                },
+            "args": ["--target","192.168.178.28",
+                     "--ports", "445","--service-probes", "1000","--udp"],
+            "cwd": "${workspaceFolder}"                  
+        },
         {
             "name": "Debug integration test 'csv_roundtrip'",
             "type": "lldb",

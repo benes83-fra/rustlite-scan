@@ -41,7 +41,7 @@ fn encode_nbns_wildcard_label() -> Vec<u8> {
 /// Returns Ok(NbnsResult) on success (names may be empty if no useful data), Err on socket/timeout errors.
 pub async fn nbns_query(ip: &str, timeout_ms: u64) -> Result<NbnsResult, Box<dyn std::error::Error + Send + Sync>> {
     // Bind ephemeral UDP socket on all interfaces
-    let sock = UdpSocket::bind("192.168.178.28:137").await?;
+    let sock = UdpSocket::bind("0.0.0.0:0").await?;
     let addr: std::net::SocketAddr = format!("{}:137", ip).parse()?;
 
     eprintln!("NBNS: nbns_query start for {}", addr);
@@ -66,15 +66,32 @@ pub async fn nbns_query(ip: &str, timeout_ms: u64) -> Result<NbnsResult, Box<dyn
     pkt.extend_from_slice(&label);
     pkt.extend_from_slice(&0x0021u16.to_be_bytes()); // QTYPE = NBSTAT (0x0021)
     pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // QCLASS = IN (0x0001)
+    fn hex_dump(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{:02x}", x)).collect::<Vec<_>>().join("")
+    }
+    eprintln!("NBNS: outgoing pkt hex: {}", hex_dump(&pkt));
+    let mut pkt2: Vec<u8> = vec![
+    0x31,0x38,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x20,
+    0x43,0x4b,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,
+    0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x41,0x00,0x00,0x21,0x00,0x01,
+];
 
+    pkt2[0..2].copy_from_slice(&txid.to_be_bytes());
+    eprintln!("{:?}", pkt);
+    eprintln!("{:?}",pkt2);
     // Send packet
-    let to = Duration::from_millis(timeout_ms);
-    timeout(to, sock.send_to(&pkt, &addr)).await??;
-
+    let to = Duration::from_millis(timeout_ms*10);
+    
+    let sent=timeout(to, sock.send_to(&pkt, &addr)).await??;
+    eprintln!("NBNS: sent {} bytes to {}.. as {}", sent, addr,hex_dump(&pkt));
+   
     // Receive response
     let mut buf = vec![0u8; 1500];
-    eprintln!("Receiving buffer");
+    
+    eprintln!("Receiving buffer to {:?}",sock);
+    
     let recv_res = tokio::time::timeout(to, sock.recv_from(&mut buf)).await;
+    
     let (n, _peer) = match recv_res {
         Ok(Ok((n, peer))) => {
             eprintln!("NBNS: got {} bytes from {}", n, peer);
@@ -89,7 +106,10 @@ pub async fn nbns_query(ip: &str, timeout_ms: u64) -> Result<NbnsResult, Box<dyn
             return Ok(NbnsResult { names: Vec::new(), unit_id: None });
         }
     };
+
     buf.truncate(n);
+    
+    
    
     eprintln!("Buf after send is :{:?}",buf);
 
@@ -104,7 +124,7 @@ pub async fn nbns_query(ip: &str, timeout_ms: u64) -> Result<NbnsResult, Box<dyn
         eprintln!("resp_txid !=txid");
         return Ok(NbnsResult { names: Vec::new(), unit_id: None });
     }
-    let qdcount = u16::from_be_bytes([buf[4], buf[5]]);
+    let _qdcount = u16::from_be_bytes([buf[4], buf[5]]);
     let ancount = u16::from_be_bytes([buf[6], buf[7]]);
     if ancount == 0 {
         eprintln!("Returing ancount == 0");
