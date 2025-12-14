@@ -15,7 +15,6 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use serde_json::{json, Value};
-use trust_dns_proto::rr::rdata::null;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
@@ -26,13 +25,13 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use std::time::Instant;
 use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Semaphore;
-use crate::probes::Probe;
+use std::time::Duration;
+
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
 
@@ -882,9 +881,7 @@ pub async fn scan_host(
                             // mutex guard dropped here when `map` goes out of scope
                         }
                         // Run the probe with a timeout
-                        use std::future::Future;
-                        use std::pin::Pin;
-                        use std::time::Duration;
+                        
                         let probe_params = value.probe_params.clone(); 
                         let timeout = probe_timeout.clone();
                         let probe_fut: Pin<Box<dyn Future<Output = Option<ServiceFingerprint>> + Send>> = {

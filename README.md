@@ -62,6 +62,22 @@ cargo run --release -- --target 192.168.1.1 --ports 1-1024
 # Scan multiple targets (example)
 cargo run --release -- --targets targets.txt --ports 22,80,443
 
+--probe-param key=value is good. Document conventions in --help and README:
+
+usernames=postgres,rustlite
+
+dbnames=postgres,rustlite_test
+
+timeout_ms=3000
+
+max_attempts=5
+
+probe_mode=aggressive (must be set to enable credential probing)
+
+Consider adding --probe-param-file path.json for complex runs (optional).
+
+
+
 # Save results
 cargo run --release -- --target 192.168.1.1 --ports 1-1024 --output results.json
 Note: The repository includes example results.json and results.csv to show the output format and fields.
