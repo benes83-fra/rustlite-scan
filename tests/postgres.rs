@@ -1,3 +1,4 @@
+use rustlite_scan::probes::postgres::{build_startup_message, parse_cstring_pair};
 #[cfg(test)]
 mod tests {
     use super::*;

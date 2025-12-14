@@ -1,24 +1,93 @@
-A simple Rust clone of NMAP
-#### Per-probe metrics (JSON Lines)
+rustlite-scan
+A lightweight Rust-based port scanner inspired by Nmap. It’s intended as a compact, educational tool for fast host/port discovery and simple result export.
 
-**Flag**: `--metrics-out <FILE>`
+Key features
+Rust implementation focused on simplicity and performance.
 
-When provided, the scanner writes one JSON object per probe attempt to the given file (JSON Lines / newline-delimited JSON). Each line is a compact JSON object describing the probe event and some runtime metadata. The file is append-only and safe to stream while the scan runs.
+Port scanning for one or multiple targets (CLI-driven).
 
-**Example usage**
-```bash
-cargo run -- --target 127.0.0.1 --ports 53 --udp --metrics-out metrics.jsonl
+Exportable results in JSON and CSV formats (example outputs included in the repo).
+
+Automated tests and a small test suite under tests/. including docker startup scripts
+
+Features and exensible set of probes to discover different services in the network
+like :
+dns.rs                                                               
+ftp.rs                                                               
+helper.rs                                                            
+http.rs                                                              
+https.rs                                                             
+icmp.rs                                                              
+imap.rs                                                              
+ldap.rs                                                              
+mod.rs                                                               
+nbns.rs                                                              
+nbns_helper.rs                                                       
+pop3.rs                                                              
+postgres.rs                                                          
+rdp.rs                                                               
+smb.rs                                                               
+smtp.rs                                                              
+snmp.rs                                                              
+ssh.rs                                                               
+tcp.rs                                                               
+tls.rs                                                               
+udp.rs                                                               
 
 
 
 
----
+Why use rustlite-scan
+Educational: good for learning Rust networking and async patterns.
 
-### Cargo.toml feature for test helpers
-Add this feature to `Cargo.toml` so integration tests can enable `refill_once` without exposing it in normal builds.
+Lightweight: fewer features than Nmap but easier to read and extend.
 
-```toml
-[features]
-# test_helpers exposes small helpers used only by tests and integration tests
-test_helpers = []
+Portable: builds with Cargo and runs on any platform supported by Rust.
 
+Installation
+bash
+# Clone the repo
+git clone https://github.com/benes83-fra/rustlite-scan.git
+cd rustlite-scan
+
+# Build with Cargo
+cargo build --release
+Quick usage
+Replace <target> and <ports> with your values.
+
+bash
+# Basic scan (example)
+cargo run --release -- --target 192.168.1.1 --ports 1-1024
+
+# Scan multiple targets (example)
+cargo run --release -- --targets targets.txt --ports 22,80,443
+
+# Save results
+cargo run --release -- --target 192.168.1.1 --ports 1-1024 --output results.json
+Note: The repository includes example results.json and results.csv to show the output format and fields.
+
+Output formats
+JSON — structured, machine-readable results suitable for further processing.
+
+CSV — quick tabular export for spreadsheets and simple reporting. Example files are present in the repository root to illustrate the schema.
+
+Tests
+Run the test suite with Cargo:
+
+bash
+cargo test
+Tests are located in the tests/ directory and exercise core scanning logic and utilities.
+
+Development notes & suggestions
+Document CLI flags explicitly in README (examples above are placeholders — replace with the actual flags implemented in src/).
+
+Add examples for common workflows (single-host, subnet, file-based targets).
+
+Clarify concurrency model (sync vs async) and any rate-limiting or timeout defaults.
+
+Include a CONTRIBUTING.md with coding style, testing, and PR guidelines to encourage contributions.
+
+Contributing
+Fork, create a feature branch, add tests, and open a PR. Keep changes small and focused.
+
+Please run cargo fmt and cargo clippy before submitting.

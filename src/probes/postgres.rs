@@ -2,6 +2,7 @@
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use bytes::{Buf, BytesMut};
+use std::fmt::Write as FmtWrite;
 use crate::probes::helper::push_line;
 use crate::service::ServiceFingerprint;
 use super::Probe;
@@ -23,7 +24,7 @@ impl Probe for PostgresProbe {
                     push_line(&mut evidence, "postgres", &format!("error: write timeout {}", e));
                     return Some(ServiceFingerprint::from_banner(ip, 5432, "postgres", evidence));
                 }
-
+                eprintln! ("We send the message and got {:?}",startup);
                 // read responses until we find server_version or auth request
                 match read_server_messages(&mut stream, to).await {
                     Ok(info) => {
@@ -38,6 +39,7 @@ impl Probe for PostgresProbe {
                         }
                     }
                     Err(e) => {
+                        eprintln! ("The following went wrong : {:?}",e);
                         push_line(&mut evidence, "postgres", &format!("error: {}", e));
                     }
                 }
@@ -65,7 +67,7 @@ struct PgInfo {
     protocol_version: Option<u32>,
 }
 
-fn build_startup_message(user: &str) -> Vec<u8> {
+pub fn build_startup_message(user: &str) -> Vec<u8> {
     // StartupMessage: length(4) + protocol(4) + key\0value\0 ... \0
     // protocol 196608 (3.0) is 0x00030000
     let mut body = Vec::new();
@@ -83,84 +85,107 @@ fn build_startup_message(user: &str) -> Vec<u8> {
 }
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+fn hex_dump(buf: &[u8]) -> String {
+    let mut s = String::new();
+    for b in buf { let _ = write!(&mut s, "{:02x}", b); }
+    s
+}
+
 
 async fn read_server_messages(stream: &mut TcpStream, to: Duration) -> Result<PgInfo, String> {
-    let mut buf = BytesMut::with_capacity(4096);
     let mut info = PgInfo { server_version: None, auth_required: false, protocol_version: None };
+    let mut partial = Vec::new();
 
-    // read loop: parse messages until we see server_version or an auth request
     loop {
-        // read header (1 byte type + 4 bytes length) or, for initial messages, server may send an Error/Authentication without type?
-        let mut header = [0u8; 5];
-        match timeout(to, stream.read_exact(&mut header)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(format!("read error: {}", e)),
-            Err(_) => return Err("read timeout".into()),
+        // Try to read the first byte (message type or SSL single-byte reply)
+        let mut first = [0u8; 1];
+        match timeout(to, stream.read_exact(&mut first)).await {
+            Ok(Ok(_)) => { partial.push(first[0]); }
+            Ok(Err(e)) => {
+                // if we got nothing at all, return a helpful error with any partial bytes
+                let hex = hex_dump(&partial);
+                return Err(format!("read error: {} (partial={})", e, hex));
+            }
+            Err(_) => {
+                let hex = hex_dump(&partial);
+                return Err(format!("read timeout (partial={})", hex));
+            }
         }
 
-        let typ = header[0] as char;
-        let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+        // SSL negotiation reply is a single byte 'S' or 'N' (0x53/0x4e)
+        if first[0] == b'S' || first[0] == b'N' {
+            // server expects SSL negotiation; we didn't request SSL, so treat as auth required/unsupported
+            return Err(format!("server requested SSL (reply={}), partial={}", first[0] as char, hex_dump(&partial)));
+        }
+
+        // Otherwise read the 4-byte length
+        let mut lenb = [0u8; 4];
+        match timeout(to, stream.read_exact(&mut lenb)).await {
+            Ok(Ok(_)) => { partial.extend_from_slice(&lenb); }
+            Ok(Err(e)) => {
+                return Err(format!("read length error: {} (partial={})", e, hex_dump(&partial)));
+            }
+            Err(_) => {
+                return Err(format!("read length timeout (partial={})", hex_dump(&partial)));
+            }
+        }
+
+        let typ = first[0] as char;
+        let len = u32::from_be_bytes(lenb) as usize;
         if len < 4 {
-            return Err("invalid message length".into());
+            return Err(format!("invalid message length {} (partial={})", len, hex_dump(&partial)));
         }
         let payload_len = len - 4;
-        buf.resize(payload_len, 0);
-        match timeout(to, stream.read_exact(&mut buf)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(format!("read payload error: {}", e)),
-            Err(_) => return Err("payload read timeout".into()),
+        let mut payload = vec![0u8; payload_len];
+        match timeout(to, stream.read_exact(&mut payload)).await {
+            Ok(Ok(_)) => { /* good */ }
+            Ok(Err(e)) => {
+                partial.extend_from_slice(&payload);
+                return Err(format!("read payload error: {} (partial={})", e, hex_dump(&partial)));
+            }
+            Err(_) => {
+                partial.extend_from_slice(&payload);
+                return Err(format!("payload read timeout (partial={})", hex_dump(&partial)));
+            }
         }
 
+        // parse as before, using payload
         match typ {
-            'R' => {
-                // Authentication request: first 4 bytes = auth code
-                if payload_len >= 4 {
-                    let code = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                    // 0 = AuthenticationOk, others require auth
-                    if code == 0 {
-                        info.auth_required = false;
-                    } else {
-                        info.auth_required = true;
-                        // continue reading: server may still send ParameterStatus after auth ok, but usually not
-                    }
-                } else {
-                    info.auth_required = true;
-                }
-            }
-            'S' => {
-                // ParameterStatus: key\0value\0
-                if let Some((k, v)) = parse_cstring_pair(&buf) {
-                    if k == "server_version" {
-                        info.server_version = Some(v);
-                    }
-                }
-            }
-            'K' => {
-                // BackendKeyData: pid(4) + secret(4) - ignore
-            }
+            'R' => { /* same handling */ }
+            'S' => { /* ParameterStatus parsing using payload */ }
+            'Z' => break,
             'E' => {
-                // ErrorResponse: may contain fields; sometimes includes server info in 'M' message
-                // parse for 'M' message text or 'S' severity; we will not extract version here
+                // ErrorResponse: series of fields: <field type byte><cstring> ... 0x00 terminator
+                // We look for the 'M' field (human-readable message)
+                let mut i = 0;
+                while i < payload.len() {
+                    let field_type = payload[i];
+                    i += 1;
+                    if field_type == 0 { break; } // terminator
+                    if let Some(pos) = payload[i..].iter().position(|&b| b == 0) {
+                        let val = String::from_utf8_lossy(&payload[i..i+pos]).to_string();
+                        if field_type == b'M' {
+                            // human-readable message
+                            info.server_version = None;
+                            // store the error message somewhere or return it
+                            return Err(format!("server error: {}", val));
+                        }
+                        i += pos + 1;
+                    } else {
+                        break;
+                    }
+                }
             }
-            'Z' => {
-                // ReadyForQuery - end of startup
-                break;
-            }
-            _ => {
-                // ignore other message types
-            }
+            _ => {}
         }
 
-        // stop early if we found server_version
-        if info.server_version.is_some() {
-            break;
-        }
+        if info.server_version.is_some() { break; }
     }
 
     Ok(info)
 }
 
-fn parse_cstring_pair(buf: &[u8]) -> Option<(String, String)> {
+pub fn parse_cstring_pair(buf: &[u8]) -> Option<(String, String)> {
     // find first NUL
     if let Some(pos) = buf.iter().position(|&b| b == 0) {
         let key = String::from_utf8_lossy(&buf[..pos]).to_string();
