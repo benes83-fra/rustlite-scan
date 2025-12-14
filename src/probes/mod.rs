@@ -16,12 +16,13 @@ pub mod ldap;
 pub mod snmp;
 pub mod nbns;
 pub mod smb;
+pub mod context;
 pub mod postgres;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
 pub use icmp::icmp_ping_addr;
-
+pub use context::ProbeContext;
 use async_trait::async_trait;
 use std::sync::Arc;
 use crate::service::ServiceFingerprint;
@@ -34,6 +35,7 @@ pub trait Probe: Send + Sync {
     fn ports(&self) -> Vec<u16>;
     /// Human name for logging
     fn name(&self) -> &'static str { "generic" }
+    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint>;
 }
 
 pub type ProbeHandle = Arc<dyn Probe>;

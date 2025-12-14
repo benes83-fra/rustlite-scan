@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 use std::time::Duration;
+use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 
@@ -9,6 +10,11 @@ pub struct DnsProbe;
 
 #[async_trait]
 impl Probe for DnsProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
         let socket = UdpSocket::bind("0.0.0.0:0").await.ok()?;

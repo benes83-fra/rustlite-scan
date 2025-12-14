@@ -3,7 +3,7 @@ use tokio::net::TcpStream;
 use tokio::io::AsyncWriteExt;
 use std::time::Duration;
 
-use crate::service::ServiceFingerprint;
+use crate::{probes::ProbeContext, service::ServiceFingerprint};
 use crate::probes::tls::fingerprint_tls;
 use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod};
@@ -13,6 +13,11 @@ pub struct RdpProbe;
 
 #[async_trait]
 impl Probe for RdpProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
 

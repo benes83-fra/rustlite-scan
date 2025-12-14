@@ -3,6 +3,7 @@ use tokio::time::{timeout, Duration, sleep};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::helper::push_line;
@@ -692,6 +693,11 @@ impl SmbProbe {
 
 #[async_trait::async_trait]
 impl Probe for SmbProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
 
@@ -714,7 +720,7 @@ impl Probe for SmbProbe {
                         if DEBUG { eprintln!("SMB: trying SMB2 negotiate fallback"); }
                         let req2 = SmbProbe::build_smb2_negotiate();
                         if DEBUG { eprintln!("SMB: sending SMB2 negotiate ({} bytes) to {}", req2.len(), addr); }
-                        if let Some(resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await {
+                        if let Some(_resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await {
                             // parse SMB2 response
                             /* 
                             let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp2);

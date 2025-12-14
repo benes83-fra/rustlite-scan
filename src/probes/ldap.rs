@@ -1,5 +1,6 @@
 
 
+use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::tls::fingerprint_tls;
@@ -13,6 +14,11 @@ pub struct LdapProbe;
 
 #[async_trait::async_trait]
 impl Probe for LdapProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         
        

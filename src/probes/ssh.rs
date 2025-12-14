@@ -1,5 +1,5 @@
 use super::{Probe,BannerFields,BannerParser,format_evidence}    ;
-use crate::service::ServiceFingerprint;
+use crate::{probes::ProbeContext, service::ServiceFingerprint};
 use async_trait::async_trait;
 use tokio::io::AsyncReadExt;
 use std::time::Duration;
@@ -42,6 +42,11 @@ pub struct SshProbe;
 
 #[async_trait]
 impl Probe for SshProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
 

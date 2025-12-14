@@ -3,6 +3,7 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use bytes::{Buf, BytesMut};
 use std::fmt::Write as FmtWrite;
+use crate::probes::ProbeContext;
 use crate::probes::helper::push_line;
 use crate::service::ServiceFingerprint;
 use super::Probe;
@@ -11,6 +12,11 @@ pub struct PostgresProbe;
 
 #[async_trait::async_trait]
 impl Probe for PostgresProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, _port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let mut evidence = String::new();
         let addr = format!("{}:5432", ip);

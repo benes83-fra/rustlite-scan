@@ -1,7 +1,7 @@
 use crate::cli::Cli;
 use crate::netutils::{expand_targets, parse_ports};
 use crate::probes::udp::UdpProbeStats;
-use crate::probes::{default_probes};
+use crate::probes::{ProbeContext, default_probes};
 use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
 use crate::service::ServiceFingerprint;
 use crate::types::{HostResult, PortResult, UdpMetrics};
@@ -15,6 +15,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::Rng;
 use serde_json::{json, Value};
+use trust_dns_proto::rr::rdata::null;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
@@ -31,6 +32,7 @@ use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Semaphore;
+use crate::probes::Probe;
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
 
@@ -856,8 +858,9 @@ pub async fn scan_host(
                     let probe_timeout = cli.probe_timeout_ms;
                     let metrics_sample = cli.metrics_sample;
                     let host_cooldown_ms = host_cooldown_ms;
-
+                    let value = cli.clone();
                     probe_tasks.push(tokio::spawn(async move {
+                        let value=value.clone();
                         // Acquire a permit inside the task (moved into the task)
                         let _permit = sem_clone.acquire_owned().await.unwrap();
 
@@ -878,12 +881,41 @@ pub async fn scan_host(
                             map.insert(key, Instant::now());
                             // mutex guard dropped here when `map` goes out of scope
                         }
-
                         // Run the probe with a timeout
-                        let probe_fut = probe.probe(&ip_clone, port, probe_timeout);
-                        let res =
-                            tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut)
-                                .await;
+                        use std::future::Future;
+                        use std::pin::Pin;
+                        use std::time::Duration;
+                        let probe_params = value.probe_params.clone(); 
+                        let timeout = probe_timeout.clone();
+                        let probe_fut: Pin<Box<dyn Future<Output = Option<ServiceFingerprint>> + Send>> = {
+                            // capture by clone/owned values inside the async block
+                            let ip = ip_clone.clone();
+                            
+                           // clone so we don't move cli
+                            let probe = probe.clone(); // if Probe is clonable; otherwise adjust ownership
+
+                            Box::pin(async move {
+                                if !probe_params.is_empty() {
+                                    let mut ctx = ProbeContext::default();
+                                    ctx.insert("timeout_ms".to_string(), timeout.to_string());
+
+                                    for kv in probe_params {
+                                        if let Some(pos) = kv.find('=') {
+                                            let k = kv[..pos].to_string();
+                                            let v = kv[pos + 1..].to_string();
+                                            ctx.insert(k, v);
+                                        }
+                                    }
+
+                                    probe.probe_with_ctx(&ip, port, ctx).await
+                                } else {
+                                    probe.probe(&ip, port, timeout).await
+                                }
+                            })
+                        };
+
+                        let res = tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut).await;
+
 
                         match res {
                             Ok(Some(fp)) => {

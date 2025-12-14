@@ -2,6 +2,7 @@ use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration, sleep};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::helper::push_line;
@@ -369,6 +370,11 @@ impl SnmpProbe {
 
 #[async_trait::async_trait]
 impl Probe for SnmpProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
         let bind_addr = if ip.contains(':') { "[::]:0" } else { "0.0.0.0:0" };

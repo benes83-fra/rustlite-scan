@@ -7,6 +7,7 @@ use tokio::time::timeout;
 use tokio_openssl::SslStream;
 use openssl::ssl::{SslConnector, SslMethod};
 
+use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
 
@@ -14,6 +15,11 @@ pub struct HttpsProbe;
 
 #[async_trait]
 impl Probe for HttpsProbe {
+    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
+        
+        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+        self.probe(ip, port, timeout_ms).await
+    }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
         let connect_deadline = Duration::from_millis(timeout_ms);

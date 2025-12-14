@@ -92,7 +92,9 @@ pub struct Cli {
     pub metrics_sample: u64,
     pub tcp_connect_timeout_ms: i32, // 1 = emit all, 10 = 1/10
 
-
+      /// Repeated key=value probe parameters. Use multiple times: --probe-param foo=bar --probe-param timeout_ms=2000
+    #[arg(long = "probe-param", action = ArgAction::Append, value_name = "KEY=VALUE")]
+    pub probe_params: Vec<String>,
 
 
 }

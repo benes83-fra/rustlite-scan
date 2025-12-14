@@ -201,6 +201,7 @@ async fn scan_host_integration_smoke() {
         host_cooldown_ms: 0,
         force: false,
         tcp_connect_timeout_ms: 2000,
+        probe_params: Vec::new(),
 
         blocklist: String::new(),
     });
