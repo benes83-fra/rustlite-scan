@@ -6,9 +6,66 @@ use super::Probe;
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use bytes::BytesMut;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
 
+use crate::probes::helper;
 pub struct PostgresProbe;
+
+
+enum EitherStream {
+    Plain(tokio::net::TcpStream),
+    Tls(tokio_openssl::SslStream<tokio::net::TcpStream>),
+}
+
+
+/// Connect, send SSLRequest and upgrade to TLS if server replies 'S'.
+/// Returns either a boxed plain TcpStream (if server replies 'N') or a boxed SslStream (if 'S').
+async fn connect_and_maybe_upgrade(
+    ip: &str,
+    port: u16,
+    timeout_ms: u64,
+) -> Result<EitherStream, String> {
+    // Use your helper to connect with timeout
+    let tcp = helper::connect_with_timeout(ip, port, timeout_ms)
+        .await
+        .ok_or_else(|| "connect timeout".to_string())?;
+
+    // Build SSLRequest: length=8, code=80877103
+    let mut ssl_req = Vec::with_capacity(8);
+    ssl_req.extend_from_slice(&8u32.to_be_bytes());
+    ssl_req.extend_from_slice(&80877103u32.to_be_bytes());
+
+    // send SSLRequest and read single byte reply
+    if timeout(Duration::from_millis(500), tcp.writable()).await.is_err() {
+        return Err("ssl request write timeout".into());
+    }
+    let mut tcp = tcp;
+    timeout(Duration::from_millis(500), tcp.write_all(&ssl_req))
+        .await
+        .map_err(|_| "ssl request write timeout".to_string())?
+        .map_err(|e| format!("ssl request write error: {}", e))?;
+
+    let mut reply = [0u8; 1];
+    timeout(Duration::from_millis(500), tcp.read_exact(&mut reply))
+        .await
+        .map_err(|_| "ssl reply read timeout".to_string())?
+        .map_err(|e| format!("ssl reply read error: {}", e))?;
+
+    match reply[0] {
+        b'S' => {
+            // server accepts TLS: call your helper upgrade_to_tls which returns SslStream<TcpStream>
+            match helper::upgrade_to_tls(tcp, ip).await {
+                Ok(tls_stream) => Ok(EitherStream::Tls(tls_stream)),
+                Err(_) => Err("tls upgrade failed".into()),
+            }
+        }
+        b'N' => Ok(EitherStream::Plain(tcp)),
+        other => Err(format!("unexpected ssl reply byte: 0x{:02x}", other)),
+    }
+}
+
+/// Small enum to hold either stream type
+
 
 #[async_trait::async_trait]
 impl Probe for PostgresProbe {
@@ -60,17 +117,66 @@ impl Probe for PostgresProbe {
             // build startup message for this user/db
             let startup = build_startup_message_with_db(&user, &db);
 
-            let addr = format!("{}:5432", ip);
-            match timeout(timeout_dur, TcpStream::connect(&addr)).await {
-                Ok(Ok(mut stream)) => {
-                    // send startup
-                    if let Err(e) = timeout(timeout_dur, stream.write_all(&startup)).await {
+            
+            match connect_and_maybe_upgrade(ip, 5432, timeout_ms).await {
+                Ok(EitherStream::Tls(mut tls_stream)) => {
+                // send startup
+                    if let Err(e) = timeout(timeout_dur, tls_stream.write_all(&startup)).await {
+                        push_line(&mut evidence, "postgres", &format!("write_error: {}", e));
+                    } else {
+                        match read_server_messages_generic(&mut tls_stream, timeout_dur,false).await {
+                            Ok(info) => {
+                                if let Some(ref ver) = info.server_version {
+                                    push_line(&mut evidence, "postgres_version", &ver);
+                                } else {
+                                    push_line(&mut evidence, "postgres_version", "unknown");
+                                }
+                                push_line(&mut evidence, "postgres_auth_required", &format!("{}", info.auth_required));
+                                if let Some(proto) = info.protocol_version {
+                                    push_line(&mut evidence, "postgres_protocol_version", &format!("{}", proto));
+                                }
+                                // If we got server_version or auth_required=false, we can stop early
+                                if info.server_version.is_some() || !info.auth_required {
+                                    break;
+                                }
+                                if let Some(fp) = crate::probes::tls::fingerprint_tls(ip, 5432, "postgres", String::new(), tls_stream).await {
+                            
+                                    if let Some(ev) = fp.evidence {
+                                        if !evidence.is_empty() { evidence.push('\n'); }
+                                        evidence.push_str(&ev);
+                                    }
+                                }
+                            }
+                                
+                            Err(e) => {
+                                // include which user/db we tried for debugging (but avoid leaking secrets)
+                                if let Some(fp) = crate::probes::tls::fingerprint_tls(ip, 5432, "postgres",String::new(), tls_stream).await {
+                                    
+                                    if let Some (ev) =fp.evidence{
+                                        if !evidence.is_empty() {evidence.push('\n');}
+                                        evidence.push_str(&ev);
+                                    }
+                                    
+                                   
+                                }
+                                push_line(&mut evidence, "postgres_error", &format!("user={} db={} err={}", user, db, e));
+                                // continue to next combo
+                            }
+                        }
+                      
+                    // read server messages and interpret
+                    
+                    }
+                }
+                Ok(EitherStream::Plain(mut tcp)) => {
+                    
+                    if let Err(e) = timeout(timeout_dur, tcp.write_all(&startup)).await {
                         push_line(&mut evidence, "postgres", &format!("write_error: {}", e));
                         continue;
                     }
-
+                    eprintln!("We are in normal TCP");
                     // read server messages and interpret
-                    match read_server_messages_with_error_parsing(&mut stream, timeout_dur).await {
+                    match read_server_messages_generic(&mut tcp, timeout_dur,true).await {
                         Ok(info) => {
                             if let Some(ref ver) = info.server_version {
                                 push_line(&mut evidence, "postgres_version", &ver);
@@ -91,15 +197,14 @@ impl Probe for PostgresProbe {
                             push_line(&mut evidence, "postgres_error", &format!("user={} db={} err={}", user, db, e));
                             // continue to next combo
                         }
-                    }
                 }
-                Ok(Err(e)) => {
-                    push_line(&mut evidence, "postgres", &format!("connect_error: {}", e));
-                }
-                Err(_) => {
-                    push_line(&mut evidence, "postgres", "connect_timeout");
-                }
+                  
             }
+            
+            Err(_) => {
+                push_line(&mut evidence, "postgres", "connect_timeout");
+            }
+        }
         }
 
         Some(ServiceFingerprint::from_banner(ip, 5432, "postgres", evidence))
@@ -145,8 +250,102 @@ fn build_startup_message_with_db(user: &str, db: &str) -> Vec<u8> {
     msg
 }
 
+
+
+
+async fn read_server_messages_generic<S>(stream: &mut S, to: Duration,check_ssl_reply: bool) -> Result<PgInfo, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut info = PgInfo { server_version: None, auth_required: false, protocol_version: None };
+    let mut buf = BytesMut::with_capacity(4096);
+
+    loop {
+        // read first byte (type) or single-byte SSL reply
+        // read first byte (type)
+        let mut first = [0u8; 1];
+        match timeout(to, stream.read_exact(&mut first)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("read error: {}", e)),
+            Err(_) => return Err("read timeout".into()),
+        }
+
+        // Only treat 'S'/'N' as the SSL reply when we expect it on a plain stream
+        if check_ssl_reply && (first[0] == b'S' || first[0] == b'N') {
+            return Err(format!("server requested SSL (reply={})", first[0] as char));
+        }
+
+        // SSL single-byte reply handling
+        if first[0] == b'S' || first[0] == b'N' {
+            return Err(format!("server requested SSL (reply={})", first[0] as char));
+        }
+
+        // read 4-byte length
+        let mut lenb = [0u8; 4];
+        match timeout(to, stream.read_exact(&mut lenb)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("read length error: {}", e)),
+            Err(_) => return Err("read length timeout".into()),
+        }
+
+        let typ = first[0] as char;
+        let len = u32::from_be_bytes(lenb) as usize;
+        if len < 4 { return Err(format!("invalid message length {}", len)); }
+        let payload_len = len - 4;
+        let mut payload = vec![0u8; payload_len];
+        match timeout(to, stream.read_exact(&mut payload)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("read payload error: {}", e)),
+            Err(_) => return Err("payload read timeout".into()),
+        }
+
+        match typ {
+            'R' => {
+                // Authentication request: first 4 bytes = auth code
+                if payload_len >= 4 {
+                    let code = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    info.auth_required = code != 0;
+                } else {
+                    info.auth_required = true;
+                }
+            }
+            'S' => {
+                // ParameterStatus: key\0value\0
+                if let Some((k, v)) = parse_cstring_pair(&payload) {
+                    if k == "server_version" {
+                        info.server_version = Some(v);
+                    }
+                }
+            }
+            'E' => {
+                // ErrorResponse: parse fields and return the human message 'M' if present
+                if let Some(msg) = parse_error_response(&payload) {
+                    return Err(format!("server error: {}", msg));
+                } else {
+                    return Err("server error (unknown)".into());
+                }
+            }
+            'Z' => {
+                // ReadyForQuery - end of startup
+                break;
+            }
+            _ => {
+                // ignore other types
+            }
+        }
+
+        if info.server_version.is_some() {
+            break;
+        }
+    }
+
+    Ok(info)
+}
+
+
+
 /// Read server messages and parse ParameterStatus, Authentication, ErrorResponse, ReadyForQuery
-async fn read_server_messages_with_error_parsing(stream: &mut TcpStream, to: Duration) -> Result<PgInfo, String> {
+/*async fn read_server_messages_with_error_parsing(stream: &mut TcpStream, to: Duration) -> Result<PgInfo, String> {
     let mut info = PgInfo { server_version: None, auth_required: false, protocol_version: None };
     let mut buf = BytesMut::with_capacity(4096);
 
@@ -224,7 +423,7 @@ async fn read_server_messages_with_error_parsing(stream: &mut TcpStream, to: Dur
     }
 
     Ok(info)
-}
+}*/
 
 /// parse key\0value\0 pair from ParameterStatus payload
 fn parse_cstring_pair(buf: &[u8]) -> Option<(String, String)> {
@@ -258,3 +457,4 @@ fn parse_error_response(payload: &[u8]) -> Option<String> {
     }
     None
 }
+

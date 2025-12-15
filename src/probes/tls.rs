@@ -75,7 +75,7 @@ pub async fn fingerprint_tls(
     port: u16,
     proto_name: &str,
     negotiation_info: String,
-    tls_stream: SslStream<tokio::net::TcpStream>,
+    tls_stream:  SslStream<tokio::net::TcpStream>,
 ) -> Option<ServiceFingerprint> {
     let mut evidence = String::new();
     evidence.push_str(&negotiation_info);
