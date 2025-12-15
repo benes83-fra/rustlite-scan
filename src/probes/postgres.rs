@@ -3,7 +3,6 @@ use crate::probes::helper::push_line;
 use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
 use super::Probe;
-use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
@@ -11,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
 use crate::probes::helper;
 pub struct PostgresProbe;
 
+const debug:bool=true;
 
 enum EitherStream {
     Plain(tokio::net::TcpStream),
@@ -50,10 +50,11 @@ async fn connect_and_maybe_upgrade(
         .await
         .map_err(|_| "ssl reply read timeout".to_string())?
         .map_err(|e| format!("ssl reply read error: {}", e))?;
-
+    if debug {eprintln!("{} will decide whether we go TLS.",reply[0]);}
     match reply[0] {
         b'S' => {
             // server accepts TLS: call your helper upgrade_to_tls which returns SslStream<TcpStream>
+            if debug {eprintln!("We definitely are SSLing");}
             match helper::upgrade_to_tls(tcp, ip).await {
                 Ok(tls_stream) => Ok(EitherStream::Tls(tls_stream)),
                 Err(_) => Err("tls upgrade failed".into()),
@@ -174,7 +175,7 @@ impl Probe for PostgresProbe {
                         push_line(&mut evidence, "postgres", &format!("write_error: {}", e));
                         continue;
                     }
-                    eprintln!("We are in normal TCP");
+                    if debug {eprintln!("We are in normal TCP");}
                     // read server messages and interpret
                     match read_server_messages_generic(&mut tcp, timeout_dur,true).await {
                         Ok(info) => {
@@ -263,21 +264,12 @@ where
     loop {
         // read first byte (type) or single-byte SSL reply
         // read first byte (type)
+       // read first byte (type)
         let mut first = [0u8; 1];
         match timeout(to, stream.read_exact(&mut first)).await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => return Err(format!("read error: {}", e)),
             Err(_) => return Err("read timeout".into()),
-        }
-
-        // Only treat 'S'/'N' as the SSL reply when we expect it on a plain stream
-        if check_ssl_reply && (first[0] == b'S' || first[0] == b'N') {
-            return Err(format!("server requested SSL (reply={})", first[0] as char));
-        }
-
-        // SSL single-byte reply handling
-        if first[0] == b'S' || first[0] == b'N' {
-            return Err(format!("server requested SSL (reply={})", first[0] as char));
         }
 
         // read 4-byte length
@@ -342,88 +334,6 @@ where
     Ok(info)
 }
 
-
-
-/// Read server messages and parse ParameterStatus, Authentication, ErrorResponse, ReadyForQuery
-/*async fn read_server_messages_with_error_parsing(stream: &mut TcpStream, to: Duration) -> Result<PgInfo, String> {
-    let mut info = PgInfo { server_version: None, auth_required: false, protocol_version: None };
-    let mut buf = BytesMut::with_capacity(4096);
-
-    loop {
-        // read first byte (type) or single-byte SSL reply
-        let mut first = [0u8; 1];
-        match timeout(to, stream.read_exact(&mut first)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(format!("read error: {}", e)),
-            Err(_) => return Err("read timeout".into()),
-        }
-
-        // SSL single-byte reply handling
-        if first[0] == b'S' || first[0] == b'N' {
-            return Err(format!("server requested SSL (reply={})", first[0] as char));
-        }
-
-        // read 4-byte length
-        let mut lenb = [0u8; 4];
-        match timeout(to, stream.read_exact(&mut lenb)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(format!("read length error: {}", e)),
-            Err(_) => return Err("read length timeout".into()),
-        }
-
-        let typ = first[0] as char;
-        let len = u32::from_be_bytes(lenb) as usize;
-        if len < 4 { return Err(format!("invalid message length {}", len)); }
-        let payload_len = len - 4;
-        let mut payload = vec![0u8; payload_len];
-        match timeout(to, stream.read_exact(&mut payload)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(format!("read payload error: {}", e)),
-            Err(_) => return Err("payload read timeout".into()),
-        }
-
-        match typ {
-            'R' => {
-                // Authentication request: first 4 bytes = auth code
-                if payload_len >= 4 {
-                    let code = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                    info.auth_required = code != 0;
-                } else {
-                    info.auth_required = true;
-                }
-            }
-            'S' => {
-                // ParameterStatus: key\0value\0
-                if let Some((k, v)) = parse_cstring_pair(&payload) {
-                    if k == "server_version" {
-                        info.server_version = Some(v);
-                    }
-                }
-            }
-            'E' => {
-                // ErrorResponse: parse fields and return the human message 'M' if present
-                if let Some(msg) = parse_error_response(&payload) {
-                    return Err(format!("server error: {}", msg));
-                } else {
-                    return Err("server error (unknown)".into());
-                }
-            }
-            'Z' => {
-                // ReadyForQuery - end of startup
-                break;
-            }
-            _ => {
-                // ignore other types
-            }
-        }
-
-        if info.server_version.is_some() {
-            break;
-        }
-    }
-
-    Ok(info)
-}*/
 
 /// parse key\0value\0 pair from ParameterStatus payload
 fn parse_cstring_pair(buf: &[u8]) -> Option<(String, String)> {
