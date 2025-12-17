@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
 use crate::probes::helper;
 pub struct PostgresProbe;
 
-const debug:bool=true;
+const DEBUG:bool=true;
 
 enum EitherStream {
     Plain(tokio::net::TcpStream),
@@ -50,11 +50,11 @@ async fn connect_and_maybe_upgrade(
         .await
         .map_err(|_| "ssl reply read timeout".to_string())?
         .map_err(|e| format!("ssl reply read error: {}", e))?;
-    if debug {eprintln!("{} will decide whether we go TLS.",reply[0]);}
+    if DEBUG {eprintln!("{} will decide whether we go TLS.",reply[0]);}
     match reply[0] {
         b'S' => {
             // server accepts TLS: call your helper upgrade_to_tls which returns SslStream<TcpStream>
-            if debug {eprintln!("We definitely are SSLing");}
+            if DEBUG {eprintln!("We definitely are SSLing");}
             match helper::upgrade_to_tls(tcp, ip).await {
                 Ok(tls_stream) => Ok(EitherStream::Tls(tls_stream)),
                 Err(_) => Err("tls upgrade failed".into()),
@@ -125,7 +125,7 @@ impl Probe for PostgresProbe {
                     if let Err(e) = timeout(timeout_dur, tls_stream.write_all(&startup)).await {
                         push_line(&mut evidence, "postgres", &format!("write_error: {}", e));
                     } else {
-                        match read_server_messages_generic(&mut tls_stream, timeout_dur,false).await {
+                        match read_server_messages_generic(&mut tls_stream, timeout_dur).await {
                             Ok(info) => {
                                 if let Some(ref ver) = info.server_version {
                                     push_line(&mut evidence, "postgres_version", &ver);
@@ -150,7 +150,7 @@ impl Probe for PostgresProbe {
                             }
                                 
                             Err(e) => {
-                                // include which user/db we tried for debugging (but avoid leaking secrets)
+                                // include which user/db we tried for DEBUGging (but avoid leaking secrets)
                                 if let Some(fp) = crate::probes::tls::fingerprint_tls(ip, 5432, "postgres",String::new(), tls_stream).await {
                                     
                                     if let Some (ev) =fp.evidence{
@@ -175,9 +175,9 @@ impl Probe for PostgresProbe {
                         push_line(&mut evidence, "postgres", &format!("write_error: {}", e));
                         continue;
                     }
-                    if debug {eprintln!("We are in normal TCP");}
+                    if DEBUG {eprintln!("We are in normal TCP");}
                     // read server messages and interpret
-                    match read_server_messages_generic(&mut tcp, timeout_dur,true).await {
+                    match read_server_messages_generic(&mut tcp, timeout_dur).await {
                         Ok(info) => {
                             if let Some(ref ver) = info.server_version {
                                 push_line(&mut evidence, "postgres_version", &ver);
@@ -194,7 +194,7 @@ impl Probe for PostgresProbe {
                             }
                         }
                         Err(e) => {
-                            // include which user/db we tried for debugging (but avoid leaking secrets)
+                            // include which user/db we tried for DEBUGging (but avoid leaking secrets)
                             push_line(&mut evidence, "postgres_error", &format!("user={} db={} err={}", user, db, e));
                             // continue to next combo
                         }
@@ -229,6 +229,7 @@ struct PgInfo {
     server_version: Option<String>,
     auth_required: bool,
     protocol_version: Option<u32>,
+
 }
 
 /// Build a StartupMessage including database and user
@@ -254,7 +255,7 @@ fn build_startup_message_with_db(user: &str, db: &str) -> Vec<u8> {
 
 
 
-async fn read_server_messages_generic<S>(stream: &mut S, to: Duration,check_ssl_reply: bool) -> Result<PgInfo, String>
+async fn read_server_messages_generic<S>(stream: &mut S, to: Duration) -> Result<PgInfo, String>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -368,3 +369,150 @@ fn parse_error_response(payload: &[u8]) -> Option<String> {
     None
 }
 
+pub async fn probe_postgres_minimal_no_creds(
+    ip: &str,
+    port: u16,
+    timeout_ms: u64,
+) -> Option<ServiceFingerprint> {
+    let mut evidence = String::new();
+    let timeout_dur = Duration::from_millis(timeout_ms);
+
+    // 1) Connect (with helper)
+    let mut tcp = match helper::connect_with_timeout(ip, port, timeout_ms).await {
+        Some(s) => s,
+        None => {
+            push_line(&mut evidence, "postgres", "connect_timeout");
+            return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+        }
+    };
+
+    // 2) Send SSLRequest and read single-byte reply
+    // SSLRequest: length=8, code=80877103
+    let mut ssl_req = Vec::with_capacity(8);
+    ssl_req.extend_from_slice(&8u32.to_be_bytes());
+    ssl_req.extend_from_slice(&80877103u32.to_be_bytes());
+
+    if timeout(Duration::from_millis(500), tcp.write_all(&ssl_req)).await.is_err() {
+        push_line(&mut evidence, "postgres", "ssl_request_write_timeout");
+        return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+    }
+
+    let mut reply = [0u8; 1];
+    if timeout(Duration::from_millis(500), tcp.read_exact(&mut reply)).await.is_err() {
+        push_line(&mut evidence, "postgres", "ssl_reply_read_timeout");
+        return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+    }
+
+  
+
+    let mut stream_kind = match reply[0] {
+        b'S' => {
+            // try to upgrade to TLS using your helper
+            match helper::upgrade_to_tls(tcp, ip).await {
+                Ok(tls_stream) => EitherStream::Tls(tls_stream),
+                Err(_) => {
+                    push_line(&mut evidence, "postgres", "tls_upgrade_failed");
+                    return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+                }
+            }
+        }
+        b'N' => EitherStream::Plain(tcp),
+        other => {
+            push_line(&mut evidence, "postgres", &format!("unexpected_ssl_reply: 0x{:02x}", other));
+            return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+        }
+    };
+
+    // 4) Build minimal StartupMessage (protocol 3.0). No user/db by default.
+    let startup = build_startup_message_minimal();
+
+    // 5) Send StartupMessage and parse server messages
+    // We'll parse S (ParameterStatus), R (Authentication), E (ErrorResponse), Z (ReadyForQuery)
+    // and stop once we have server_version and auth info or after ReadyForQuery.
+    let parse_result = match &mut stream_kind {
+        EitherStream::Plain(ref mut s) => {
+            if timeout(timeout_dur, s.write_all(&startup)).await.is_err() {
+                push_line(&mut evidence, "postgres", "startup_write_timeout_plain");
+                return Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence));
+            }
+            read_server_messages_generic(s, timeout_dur).await
+        }
+        EitherStream::Tls(ref mut s) => {
+            if timeout(timeout_dur, s.write_all(&startup)).await.is_err() {
+                push_line(&mut evidence, "postgres", "startup_write_timeout_tls");
+                // still try to fingerprint certs below
+                read_server_messages_generic(s, timeout_dur).await
+            } else {
+                read_server_messages_generic(s, timeout_dur).await
+            }
+        }
+    };
+
+    // parse_result contains PgInfo or error
+    match parse_result {
+        Ok(info) => {
+            if let Some(ver) = info.server_version {
+                push_line(&mut evidence, "postgres_version", &ver);
+            } else {
+                push_line(&mut evidence, "postgres_version", "unknown");
+            }
+            push_line(&mut evidence, "postgres_auth_required", &format!("{}", info.auth_required));
+            if let Some(code) = info.protocol_version {
+                let mapped = map_auth_code(code);
+                push_line(&mut evidence, "postgres_auth_method", &format!("{} ({})", mapped, code));
+            }
+        }
+        Err(e) => {
+            push_line(&mut evidence, "postgres_error", &e);
+        }
+    }
+
+    // 6) If TLS was used, extract cert evidence by consuming the SslStream via your helper
+    if let EitherStream::Tls(tls_stream) = stream_kind {
+        // fingerprint_tls consumes the SslStream and returns ServiceFingerprint with evidence
+        if let Some(fp) = crate::probes::tls::fingerprint_tls(ip, port, "postgres", evidence.clone(), tls_stream).await {
+            if let Some(ev) = fp.evidence {
+                // merge TLS evidence with existing evidence
+                let mut merged = evidence;
+                if !merged.is_empty() { merged.push('\n'); }
+                merged.push_str(&ev);
+                return Some(ServiceFingerprint::from_banner(ip, port, "postgres", merged));
+            }
+        }
+    }
+
+    Some(ServiceFingerprint::from_banner(ip, port, "postgres", evidence))
+}
+
+/// Build a minimal StartupMessage (protocol 3.0) with no user/db fields.
+/// Format: length (4) + protocol (4) + sequence of key\0value\0 pairs + final 0
+fn build_startup_message_minimal() -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&0x00030000u32.to_be_bytes()); // protocol 3.0
+    // Optionally add application_name or other harmless params if desired:
+    // body.extend_from_slice(b"application_name\0rustlite_scan\0");
+    body.push(0); // terminator for parameters (no key/value pairs)
+    let len = (4 + body.len()) as u32;
+    let mut msg = Vec::with_capacity(len as usize);
+    msg.extend_from_slice(&len.to_be_bytes());
+    msg.extend_from_slice(&body);
+    msg
+}
+
+/// Map common Authentication codes to readable names
+fn map_auth_code(code: u32) -> &'static str {
+    match code {
+        0 => "AuthenticationOk",
+        2 => "AuthenticationKerberosV5",
+        3 => "AuthenticationCleartextPassword",
+        5 => "AuthenticationMD5Password",
+        6 => "AuthenticationSCMCredential",
+        7 => "AuthenticationGSS",
+        8 => "AuthenticationSSPI",
+        9 => "AuthenticationGSSContinue",
+        10 => "AuthenticationSASL",
+        11 => "AuthenticationSASLContinue",
+        12 => "AuthenticationSASLFinal",
+        _ => "AuthenticationUnknown",
+    }
+}
