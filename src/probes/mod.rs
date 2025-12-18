@@ -16,6 +16,7 @@ pub mod ldap;
 pub mod snmp;
 pub mod nbns;
 pub mod smb;
+pub mod mysql;
 pub mod context;
 pub mod postgres;
 pub mod nbns_helper;
@@ -57,6 +58,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::smb::SmbProbe{}),
         Arc::new(crate::probes::nbns::NbnsProbe{}),
         Arc::new(crate::probes::postgres::PostgresProbe{}),
+        Arc::new(crate::probes::mysql::MysqlProbe{}),
         // add more probes here
     ]
 }
