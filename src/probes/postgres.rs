@@ -214,9 +214,8 @@ impl Probe for PostgresProbe {
     // keep trait compatibility
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         // default shim: build a minimal ctx with timeout_ms
-        let mut ctx = ProbeContext::default();
-        ctx.insert("timeout_ms", timeout_ms.to_string());
-        self.probe_with_ctx(ip, port, ctx).await
+        let probe_postgres_minimal_no_creds = probe_postgres_minimal_no_creds(ip, port, timeout_ms);
+        probe_postgres_minimal_no_creds.await
     }
 
     fn ports(&self) -> Vec<u16> { vec![5432] }
