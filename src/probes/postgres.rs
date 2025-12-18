@@ -259,7 +259,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut info = PgInfo { server_version: None, auth_required: false, protocol_version: None };
-    let mut buf = BytesMut::with_capacity(4096);
+    let mut _buf = BytesMut::with_capacity(4096);
 
     loop {
         // read first byte (type) or single-byte SSL reply
