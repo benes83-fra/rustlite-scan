@@ -12,6 +12,7 @@ Automated tests and a small test suite under tests/. including docker startup sc
 
 Features and exensible set of probes to discover different services in the network
 like :
+
 dns.rs                                                               
 ftp.rs                                                               
 helper.rs                                                            
@@ -20,7 +21,8 @@ https.rs
 icmp.rs                                                              
 imap.rs                                                              
 ldap.rs                                                              
-mod.rs                                                               
+mod.rs     
+mysql.rs                                                          
 nbns.rs                                                              
 nbns_helper.rs                                                       
 pop3.rs                                                              

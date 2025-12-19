@@ -17,6 +17,7 @@ pub mod snmp;
 pub mod nbns;
 pub mod smb;
 pub mod mysql;
+pub mod redis;
 pub mod context;
 pub mod postgres;
 pub mod nbns_helper;
@@ -59,6 +60,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::nbns::NbnsProbe{}),
         Arc::new(crate::probes::postgres::PostgresProbe{}),
         Arc::new(crate::probes::mysql::MysqlProbe{}),
+        Arc::new(crate::probes::redis::RedisProbe{}),
         // add more probes here
     ]
 }

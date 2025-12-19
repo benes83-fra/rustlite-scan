@@ -73,7 +73,7 @@ pub struct MysqlInfo {
    pub auth_plugin: Option<String>,
 }
 
-fn parse_handshake(buf: &[u8]) -> Option<MysqlInfo> {
+pub fn parse_handshake(buf: &[u8]) -> Option<MysqlInfo> {
     if buf.len() < 5 { return None; }
     // skip 4-byte packet header
     let mut i = 4;
