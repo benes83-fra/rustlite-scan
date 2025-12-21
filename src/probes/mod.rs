@@ -18,6 +18,7 @@ pub mod nbns;
 pub mod smb;
 pub mod mysql;
 pub mod redis;
+pub mod elastic;
 pub mod mongo;
 pub mod context;
 pub mod postgres;
@@ -63,6 +64,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::mysql::MysqlProbe{}),
         Arc::new(crate::probes::redis::RedisProbe{}),
         Arc::new (crate::probes::mongo::MongoProbe{}),
+        Arc::new (crate::probes::elastic::ElasticProbe{}),
         // add more probes here
     ]
 }
