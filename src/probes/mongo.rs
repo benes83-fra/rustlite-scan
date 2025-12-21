@@ -61,7 +61,15 @@ impl Probe for MongoProbe {
             };
             info = parse_hello_response(&msg2);
         }
-
+        let buildinfo_cmd = build_buildinfo_opmsg();
+        if timeout(timeout_dur, tcp.write_all(&buildinfo_cmd)).await.is_ok() {
+            if let Some(msg) = read_mongo_message(&mut tcp, timeout_dur).await {
+                if let Some(bi) = parse_buildinfo_response(&msg) {
+                    push_line(&mut evidence, "mongodb_version", &bi);
+                    // optionally increase confidence here
+                }
+            }
+        }
         // Now process whatever info we have (could still be None)
         if let Some(info) = info {
             if let Some(ver) = info.version {
@@ -118,6 +126,111 @@ async fn read_mongo_message(
     msg.extend_from_slice(&len_buf);
     msg.extend_from_slice(&rest);
     Some(msg)
+}
+
+fn parse_buildinfo_response(buf: &[u8]) -> Option<String> {
+    if buf.len() < 16 {
+        return None;
+    }
+
+    // header
+    let message_length = LittleEndian::read_i32(&buf[0..4]) as usize;
+    if message_length != buf.len() {
+        return None;
+    }
+
+    // opCode at bytes 12..16
+    let op_code = LittleEndian::read_i32(&buf[12..16]);
+
+    let mut doc_opt: Option<Document> = None;
+
+    if op_code == 2013 {
+        // OP_MSG
+        if buf.len() < 21 {
+            return None;
+        }
+
+        let _flags = LittleEndian::read_u32(&buf[16..20]);
+        let kind = buf[20];
+
+        match kind {
+            0 => {
+                // single BSON document at offset 21
+                let bson_start = 21;
+                if bson_start + 4 > buf.len() {
+                    return None;
+                }
+                let bson_size = LittleEndian::read_i32(&buf[bson_start..bson_start + 4]) as usize;
+                if bson_start + bson_size > buf.len() {
+                    return None;
+                }
+                doc_opt = bson::from_slice(&buf[bson_start..bson_start + bson_size]).ok();
+            }
+            1 => {
+                // document sequence
+                if buf.len() < 25 {
+                    return None;
+                }
+                let size = LittleEndian::read_i32(&buf[21..25]) as usize;
+                if 21 + size > buf.len() {
+                    return None;
+                }
+                let pos = 25usize;
+                if pos + 4 > buf.len() {
+                    return None;
+                }
+                let first_doc_size = LittleEndian::read_i32(&buf[pos..pos + 4]) as usize;
+                if pos + first_doc_size > buf.len() {
+                    return None;
+                }
+                doc_opt = bson::from_slice(&buf[pos..pos + first_doc_size]).ok();
+            }
+            _ => return None,
+        }
+    } else if op_code == 1 {
+        // OP_REPLY (legacy)
+        if buf.len() < 36 + 4 {
+            return None;
+        }
+        let doc_start = 36usize;
+        let first_doc_size = LittleEndian::read_i32(&buf[doc_start..doc_start + 4]) as usize;
+        if doc_start + first_doc_size > buf.len() {
+            return None;
+        }
+        doc_opt = bson::from_slice(&buf[doc_start..doc_start + first_doc_size]).ok();
+    } else {
+        return None;
+    }
+
+    let doc = doc_opt?;
+
+    // Extract version field from buildInfo
+    doc.get_str("version")
+        .ok()
+        .map(|s| s.to_string())
+}
+
+fn build_buildinfo_opmsg() -> Vec<u8> {
+    // BSON document: { "buildInfo": 1, "$db": "admin" }
+    let body = bson::to_vec(&doc! { "buildInfo": 1, "$db": "admin" }).unwrap();
+
+    let mut msg = Vec::with_capacity(16 + 4 + 1 + body.len());
+    msg.extend_from_slice(&[0u8; 4]); // placeholder
+
+    WriteBytesExt::write_i32::<LittleEndian>(&mut msg, 3).unwrap(); // requestID
+    WriteBytesExt::write_i32::<LittleEndian>(&mut msg, 0).unwrap(); // responseTo
+    WriteBytesExt::write_i32::<LittleEndian>(&mut msg, 2013).unwrap(); // opCode
+
+    WriteBytesExt::write_u32::<LittleEndian>(&mut msg, 0).unwrap(); // flags
+    WriteBytesExt::write_u8(&mut msg, 0).unwrap(); // section kind 0
+
+    msg.extend_from_slice(&body);
+
+    let len = msg.len() as i32;
+    let mut cursor = Cursor::new(&mut msg[..4]);
+    WriteBytesExt::write_i32::<LittleEndian>(&mut cursor, len).unwrap();
+
+    msg
 }
 
 
