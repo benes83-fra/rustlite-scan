@@ -109,8 +109,19 @@ async fn read_amqp_frame(
 
     // payload + frame-end(1)
     let mut buf = vec![0u8; size + 1];
-    if timeout(timeout_dur, tcp.read_exact(&mut buf)).await.is_err() {
-        return None;
+    let mut read = 0;
+
+    while read < buf.len() {
+        let n = match timeout(timeout_dur, tcp.read(&mut buf[read..])).await {
+            Ok(Ok(n)) => n,
+            _ => return None,
+        };
+
+        if n == 0 {
+            return None; // connection closed early
+        }
+
+        read += n;
     }
 
     // last byte must be 0xCE
