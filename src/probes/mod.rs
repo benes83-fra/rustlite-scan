@@ -22,6 +22,7 @@ pub mod elastic;
 pub mod mongo;
 pub mod context;
 pub mod postgres;
+pub mod rabbitMQ;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -63,8 +64,9 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::postgres::PostgresProbe{}),
         Arc::new(crate::probes::mysql::MysqlProbe{}),
         Arc::new(crate::probes::redis::RedisProbe{}),
-        Arc::new (crate::probes::mongo::MongoProbe{}),
-        Arc::new (crate::probes::elastic::ElasticProbe{}),
+        Arc::new(crate::probes::mongo::MongoProbe{}),
+        Arc::new(crate::probes::elastic::ElasticProbe{}),
+        Arc::new(crate::probes::rabbitMQ::RabbitMqProbe{}), 
         // add more probes here
     ]
 }
