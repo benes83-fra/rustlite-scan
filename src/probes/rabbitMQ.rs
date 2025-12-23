@@ -30,10 +30,53 @@ impl Probe for RabbitMqProbe {
         // RabbitMQ sends Connection.Start immediately; we just read one frame.
         let frame = match read_amqp_frame(&mut tcp, timeout_dur).await {
             Some(f) => f,
-            None => {
-                push_line(&mut evidence, "rabbitmq", "read_error");
-                return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
-            }
+          None => {
+                    // --- Fallback: try AMQP 1.0 ---
+                    let mut tcp2 = match connect_with_timeout(ip, port, timeout_ms).await {
+                        Some(s) => s,
+                        None => {
+                            push_line(&mut evidence, "rabbitmq", "connect_timeout");
+                            return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+                        }
+                    };
+
+                    const AMQP_1_0_HEADER: &[u8] = b"AMQP\x00\x01\x00\x00";
+
+                    // Send AMQP 1.0 header
+                    if timeout(timeout_dur, tcp2.write_all(AMQP_1_0_HEADER)).await.is_ok() {
+                        // Try to read the echoed header
+                        let mut resp = [0u8; 8];
+                        let mut read = 0;
+
+                        while read < 8 {
+                            let n = match timeout(timeout_dur, tcp2.read(&mut resp[read..])).await {
+                                Ok(Ok(n)) => n,
+                                _ => break,
+                            };
+                            if n == 0 {
+                                break;
+                            }
+                            read += n;
+                        }
+
+                        if resp == AMQP_1_0_HEADER {
+                            // --- AMQP 1.0 detected ---
+                            push_line(&mut evidence, "amqp1.0", "protocol_header_accepted");
+
+                            return Some(ServiceFingerprint::from_banner(
+                                ip,
+                                port,
+                                "amqp1.0",
+                                evidence,
+                            ));
+                        }
+                    }
+
+                    // If we reach here, AMQP 1.0 also failed
+                    push_line(&mut evidence, "rabbitmq", "read_error");
+                    return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+                }
+
         };
 
         // type 1 = METHOD
