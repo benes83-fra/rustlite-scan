@@ -24,6 +24,8 @@ impl Probe for RabbitMqProbe {
                 return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
             }
         };
+        let header = b"AMQP\x00\x00\x09\x01";
+        tcp.write_all(header).await.ok()?;
 
         // RabbitMQ sends Connection.Start immediately; we just read one frame.
         let frame = match read_amqp_frame(&mut tcp, timeout_dur).await {
@@ -99,9 +101,24 @@ async fn read_amqp_frame(
 ) -> Option<AmqpFrame> {
     // AMQP frame header: type(1) + channel(2) + size(4) = 7 bytes
     let mut header = [0u8; 7];
-    if timeout(timeout_dur, tcp.read_exact(&mut header)).await.is_err() {
-        return None;
+    let mut read = 0;
+
+    while read < 7 {
+        let n = match timeout(timeout_dur, tcp.read(&mut header[read..])).await {
+            Ok(Ok(n)) => n,
+            
+            _ => return None,
+        };
+
+        if n == 0 {
+           
+            return None; // connection closed early
+        }
+
+        read += n;
+       
     }
+  
 
     let frame_type = header[0];
     let channel = u16::from_be_bytes([header[1], header[2]]);
