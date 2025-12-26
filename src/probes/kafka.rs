@@ -77,10 +77,10 @@ impl Probe for KafkaProbe {
             }
 
             // debug: raw ApiVersions payload
-            eprintln!("kafka api_versions (ver={}) payload len={} hex={}", ver, payload.len(),
-                payload.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""));
+           
 
             if let Some(map) = parse_api_versions_response(&payload) {
+                
                 // Pretty-print and filter invalid entries, push evidence, bump confidence
                 if !map.is_empty() {
                     // Filter out entries where min > max (likely parser artifacts)
@@ -157,12 +157,15 @@ impl Probe for KafkaProbe {
 
                     // Bump confidence when ApiVersions is present
                     confidence = 75;
+                    let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
+                    fp.confidence = confidence;
+                    return Some(fp);
                 }
 
                 // Build fingerprint and return with updated confidence
-                let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
-                fp.confidence = confidence;
-                return Some(fp);
+                //let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
+                //fp.confidence = confidence;
+                //return Some(fp);
             }
 
             // reconnect before next attempt
@@ -354,74 +357,204 @@ async fn read_exact_timeout(tcp: &mut (impl AsyncRead + Unpin), buf: &mut [u8], 
 }
 
 fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)>> {
+    use std::io::Cursor;
+    use byteorder::{BigEndian, ReadBytesExt};
 
-
-    let mut cursor = Cursor::new(payload);
-
-    // correlation id
-    let _corr = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
-
-    // throttle_time_ms (present in some response versions)
-    let _throttle_time_ms = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
-
-    // array length (int32)
-    let count = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
-    if count < 0 { return None; }
-
-    let mut map = HashMap::new();
-
-    for _ in 0..count {
-        // ensure enough bytes remain for the minimal entry (6 bytes)
-        let pos_before = cursor.position() as usize;
-        let remaining = payload.len().saturating_sub(pos_before);
-        if remaining < 6 {
-            break;
-        }
-
-        // read canonical triple
-        let api_key = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
-        let min_version = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
-        let max_version = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
-
-        map.insert(api_key, (min_version, max_version));
-
-        // Attempt to skip optional per-entry suffixes conservatively.
-        let pos_after = cursor.position() as usize;
-        let rem_after = payload.len().saturating_sub(pos_after);
-
-        if rem_after >= 4 {
-            // peek next i32 and consume if it looks like a small non-negative length/flags
-            let mut peek_buf = [0u8; 4];
-            let cur_pos = cursor.position();
-            if std::io::Read::read_exact(&mut cursor, &mut peek_buf).is_ok() {
-                let maybe_i32 = i32::from_be_bytes(peek_buf);
-                if !(maybe_i32 >= 0 && maybe_i32 <= 1_000_000) {
-                    cursor.set_position(cur_pos);
-                }
-            } else {
-                cursor.set_position(cur_pos);
+    // read uvarint by advancing cursor
+    fn read_uvarint(cursor: &mut Cursor<&[u8]>) -> Option<u64> {
+        let mut x: u64 = 0;
+        let mut s: u32 = 0;
+        loop {
+            let idx = cursor.position() as usize;
+            let b = *cursor.get_ref().get(idx)?;
+            cursor.set_position(cursor.position() + 1);
+            if b < 0x80 {
+                if s >= 64 { return None; }
+                return Some(x | ((b as u64) << s));
             }
-        } else if rem_after > 0 {
-            // Try to skip a varint (tagged fields) conservatively (up to 5 bytes)
-            let mut ok = false;
-            let cur_pos = cursor.position();
-            for _ in 0..5 {
-                if (cursor.position() as usize) >= payload.len() { break; }
-                let b = payload[cursor.position() as usize];
-                cursor.set_position(cursor.position() + 1);
-                if (b & 0x80) == 0 {
-                    ok = true;
-                    break;
-                }
-            }
-            if !ok {
-                cursor.set_position(cur_pos);
-            }
+            x |= ((b & 0x7F) as u64) << s;
+            s += 7;
+            if s >= 64 { return None; }
         }
     }
 
-    Some(map)
+    // peek uvarint from a slice at offset without advancing any cursor
+    fn peek_uvarint(slice: &[u8], mut off: usize) -> Option<(u64, usize)> {
+        let mut x: u64 = 0;
+        let mut s: u32 = 0;
+        let mut read = 0usize;
+        loop {
+            let b = *slice.get(off)?;
+            off += 1;
+            read += 1;
+            if b < 0x80 {
+                if s >= 64 { return None; }
+                return Some((x | ((b as u64) << s), read));
+            }
+            x |= ((b & 0x7F) as u64) << s;
+            s += 7;
+            if s >= 64 { return None; }
+        }
+    }
+
+    // skip tagged fields using cursor
+    fn skip_tagged(cursor: &mut Cursor<&[u8]>) -> Option<()> {
+        let num = read_uvarint(cursor)?;
+        for _ in 0..num {
+            let _tag = read_uvarint(cursor)?;
+            let size = read_uvarint(cursor)?;
+            let new_pos = cursor.position() + size;
+            if new_pos > cursor.get_ref().len() as u64 { return None; }
+            cursor.set_position(new_pos);
+        }
+        Some(())
+    }
+
+    // --- 1) Try flexible detection safely ---
+    let flexible_map_opt: Option<HashMap<i16, (i16, i16)>> = {
+        let mut cursor = Cursor::new(payload);
+
+        // correlation_id + throttle_time_ms are present in both formats
+        let _corr = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
+        let _throttle = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
+
+        // position where next field would start
+        let pos_next = cursor.position() as usize;
+
+        if payload.len() >= pos_next + 3 {
+            if let Some((count_peek, _uvarint_len)) = peek_uvarint(payload, pos_next + 2) {
+                if count_peek > 0 && count_peek <= 100_000 {
+                    cursor.set_position(pos_next as u64);
+                    let _err = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                    let count = read_uvarint(&mut cursor)? as usize;
+                    if count <= 100_000 {
+                        let mut map = HashMap::new();
+                        for _ in 0..count {
+                            let api_key = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                            let min = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                            let max = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                            map.insert(api_key, (min, max));
+                            skip_tagged(&mut cursor)?;
+                        }
+                        // skip top-level tagged fields
+                        skip_tagged(&mut cursor)?;
+                        if !map.is_empty() { return Some(map); } // flexible is authoritative if it parsed entries
+                    }
+                }
+            }
+        }
+        None
+    };
+
+    // --- 2) Try canonical classic parsing at canonical offset (pos 8) ---
+    let canonical_map_opt: Option<HashMap<i16, (i16, i16)>> = {
+        let mut cursor = Cursor::new(payload);
+
+        let _corr = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
+        let _throttle = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()?;
+
+        let count = ReadBytesExt::read_i32::<BigEndian>(&mut cursor).ok()? as usize;
+
+        // sanity checks: count reasonable and fits payload
+        if count <= 100_000 && (8usize + count * 6) <= payload.len() {
+            let mut map = HashMap::new();
+            for _ in 0..count {
+                let api_key = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                let min = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                let max = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
+                map.insert(api_key, (min, max));
+            }
+            if !map.is_empty() { return Some(map); }
+        }
+        None
+    };
+
+    // --- 3) Heuristic scan: try small range of offsets to find plausible triples ---
+    let scanned_map_opt: Option<HashMap<i16, (i16, i16)>> = {
+        let mut best_map: HashMap<i16, (i16, i16)> = HashMap::new();
+        let mut best_count = 0usize;
+
+        for start in 8usize..=12usize {
+            if payload.len() <= start + 4 { continue; }
+            // try to read a 4-byte BE count at this start
+            let maybe_count = i32::from_be_bytes([
+                *payload.get(start)?,
+                *payload.get(start + 1)?,
+                *payload.get(start + 2)?,
+                *payload.get(start + 3)?,
+            ]) as isize;
+
+            if maybe_count >= 0 && (start + (maybe_count as usize) * 6) <= payload.len() && (maybe_count as usize) <= 100_000 {
+                let mut map = HashMap::new();
+                let mut ok = true;
+                let mut off = start + 4;
+                for _ in 0..(maybe_count as usize) {
+                    if off + 6 > payload.len() { ok = false; break; }
+                    let api_key = i16::from_be_bytes([payload[off], payload[off + 1]]);
+                    let min = i16::from_be_bytes([payload[off + 2], payload[off + 3]]);
+                    let max = i16::from_be_bytes([payload[off + 4], payload[off + 5]]);
+                    off += 6;
+                    if min > max { ok = false; break; }
+                    if api_key < 0 || api_key > 200 { ok = false; break; }
+                    map.insert(api_key, (min, max));
+                }
+                if ok && map.len() > best_count {
+                    best_count = map.len();
+                    best_map = map;
+                }
+            } else {
+                // greedy triple scan from start
+                let mut map = HashMap::new();
+                let mut off = start;
+                let mut triples = 0usize;
+                while off + 6 <= payload.len() && triples < 1000 {
+                    let api_key = i16::from_be_bytes([payload[off], payload[off + 1]]);
+                    let min = i16::from_be_bytes([payload[off + 2], payload[off + 3]]);
+                    let max = i16::from_be_bytes([payload[off + 4], payload[off + 5]]);
+                    if min <= max && api_key >= 0 && api_key <= 200 {
+                        map.insert(api_key, (min, max));
+                        triples += 1;
+                        off += 6;
+                    } else {
+                        break;
+                    }
+                }
+                if triples > best_count {
+                    best_count = triples;
+                    best_map = map;
+                }
+            }
+        }
+
+        if best_count > 0 { Some(best_map) } else { None }
+    };
+
+    // --- Merge results: prefer canonical, then flexible, then scanned ---
+    let mut merged: HashMap<i16, (i16, i16)> = HashMap::new();
+
+    if let Some(canon) = canonical_map_opt {
+        for (k, v) in canon.into_iter() { merged.insert(k, v); }
+    }
+
+    if let Some(flex) = flexible_map_opt {
+        for (k, v) in flex.into_iter() {
+            merged.entry(k).or_insert(v);
+        }
+    }
+
+    if let Some(scan) = scanned_map_opt {
+        for (k, v) in scan.into_iter() {
+            merged.entry(k).or_insert(v);
+        }
+    }
+
+    if merged.is_empty() { None } else { Some(merged) }
 }
+
+
+
+
+
 
 fn metadata_request_body() -> Vec<u8> {
     let mut b = Vec::new();
