@@ -23,7 +23,7 @@ info = ServiceInfo(
 
 zc = Zeroconf()
 print("Registering service:", service_name)
-zc.register_service(info)
+zc.register_service(info,allow_name_change=True)
 
 try:
     while True:

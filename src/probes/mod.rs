@@ -23,8 +23,9 @@ pub mod mongo;
 pub mod context;
 pub mod postgres;
 pub mod rabbitMQ;
-pub mod mdns;
 pub mod kafka;
+pub mod ntp;
+pub mod vnc;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -70,7 +71,9 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::elastic::ElasticProbe{}),
         Arc::new(crate::probes::rabbitMQ::RabbitMqProbe{}), 
         Arc::new (crate::probes::kafka::KafkaProbe{}),
-        Arc::new (crate::probes::mdns::MdnsProbe{}),
+        Arc::new(crate::probes::ntp::NtpProbe{}),
+        Arc::new(crate::probes::vnc::VncProbe{}),
+       
         // add more probes here
     ]
 }

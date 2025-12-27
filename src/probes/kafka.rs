@@ -4,7 +4,7 @@ use tokio::{
 };
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor};
 
 use crate::{
     probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}},
