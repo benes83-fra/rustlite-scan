@@ -1,0 +1,9 @@
+
+services:
+  mdns-responder:
+    build: .
+    image: mdns-responder:local
+    container_name: mdns_responder
+    network_mode: "host"   # important: use host network for mDNS multicast
+    restart: "no"
+    tty: true
