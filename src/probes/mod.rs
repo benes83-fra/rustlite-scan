@@ -24,6 +24,7 @@ pub mod context;
 pub mod postgres;
 pub mod rabbitMQ;
 pub mod kafka;
+pub mod rtsp;
 pub mod ntp;
 pub mod vnc;
 pub mod nbns_helper;
@@ -73,6 +74,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new (crate::probes::kafka::KafkaProbe{}),
         Arc::new(crate::probes::ntp::NtpProbe{}),
         Arc::new(crate::probes::vnc::VncProbe{}),
+        Arc::new(crate::probes::rtsp::RtspProbe{}),
        
         // add more probes here
     ]
