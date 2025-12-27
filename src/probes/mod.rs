@@ -27,6 +27,7 @@ pub mod kafka;
 pub mod rtsp;
 pub mod ntp;
 pub mod vnc;
+pub mod sip;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -75,6 +76,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::ntp::NtpProbe{}),
         Arc::new(crate::probes::vnc::VncProbe{}),
         Arc::new(crate::probes::rtsp::RtspProbe{}),
+        Arc::new(crate::probes::sip::SipProbe{}),
        
         // add more probes here
     ]
