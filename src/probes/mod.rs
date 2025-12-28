@@ -29,6 +29,7 @@ pub mod ntp;
 pub mod vnc;
 pub mod ssdp;
 pub mod sip;
+pub mod mqtt;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -79,6 +80,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::rtsp::RtspProbe{}),
         Arc::new(crate::probes::sip::SipProbe{}),
         Arc::new(crate::probes::ssdp::SsdpProbe{}),
+        Arc::new(crate::probes::mqtt::MqttProbe{}),
        
         // add more probes here
     ]
