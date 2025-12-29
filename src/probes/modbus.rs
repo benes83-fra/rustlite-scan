@@ -45,6 +45,8 @@ impl Probe for ModbusProbe {
 
         // --- 3) Fallback: Function 0x03 (Read Holding Registers) ---
         // Reconnect for a clean transaction
+        // --- 3) Fallback: Function 0x03 and 0x04 ---
+        // Reconnect for a clean transaction for FC03
         let mut stream = match timeout(timeout_dur, TcpStream::connect(&addr)).await {
             Ok(Ok(s)) => s,
             _ => {
@@ -63,6 +65,24 @@ impl Probe for ModbusProbe {
             confidence = confidence.max(parsed_conf);
             got_useful_response = true;
         }
+
+        // Reconnect again for FC04, only if we want more detail
+        let mut stream = match timeout(timeout_dur, TcpStream::connect(&addr)).await {
+            Ok(Ok(s)) => s,
+            _ => {
+                let mut fp = ServiceFingerprint::from_banner(ip, port, "modbus", evidence);
+                fp.confidence = confidence;
+                return Some(fp);
+            }
+        };
+
+        if let Some(parsed_conf) =
+            modbus_read_input_registers(&mut stream, timeout_dur, &mut evidence).await
+        {
+            confidence = confidence.max(parsed_conf);
+            got_useful_response = true;
+        }
+
 
         // --- 4) Finalize fingerprint ---
         if !got_useful_response {
@@ -173,6 +193,16 @@ async fn modbus_report_server_id(
         );
         return None;
     }
+    if function & 0x80 != 0 {
+        let exception_code = resp[8];
+        let desc = modbus_exception_description(exception_code);
+        push_line(
+            evidence,
+            "modbus_exception_fc11",
+            &format!("0x{:02X} ({})", exception_code, desc),
+        );
+        return Some((resp, 60, None));
+    }
 
     push_line(evidence, "modbus_function_fc11", "Report Server ID");
 
@@ -194,27 +224,38 @@ async fn modbus_report_server_id(
     if let Ok(s) = String::from_utf8(server_id.to_vec()) {
         push_line(evidence, "modbus_server_id_string", &s);
 
-        let vendor = if s.to_uppercase().contains("SIEMENS") {
+        let upper = s.to_uppercase();
+        let vendor = if upper.contains("SIEMENS") {
             vendor_conf = Some(85);
             "siemens"
-        } else if s.to_uppercase().contains("WAGO") {
+        } else if upper.contains("WAGO") {
             vendor_conf = Some(85);
             "wago"
-        } else if s.to_uppercase().contains("SCHNEIDER") {
+        } else if upper.contains("SCHNEIDER") {
             vendor_conf = Some(85);
             "schneider"
-        } else if s.to_uppercase().contains("BECKHOFF") {
+        } else if upper.contains("BECKHOFF") {
             vendor_conf = Some(85);
             "beckhoff"
-        } else if s.to_uppercase().contains("UNITRONICS") {
+        } else if upper.contains("UNITRONICS") {
             vendor_conf = Some(85);
             "unitronics"
+        } else if upper.contains("ABB") {
+            vendor_conf = Some(85);
+            "abb"
+        } else if upper.contains("OMRON") {
+            vendor_conf = Some(85);
+            "omron"
+        } else if upper.contains("RUSTLITE") {
+            vendor_conf = Some(90);
+            "rustlite"
         } else {
             "unknown"
         };
 
         push_line(evidence, "modbus_vendor", vendor);
     }
+
 
     // 80 = clean function + server ID parsed
     Some((resp, 80, vendor_conf))
@@ -273,13 +314,15 @@ async fn modbus_read_holding_registers(
     // Exception?
     if function & 0x80 != 0 {
         let exception_code = resp[8];
+        let desc = modbus_exception_description(exception_code);
         push_line(
             evidence,
             "modbus_exception_fc03",
-            &format!("0x{:02X}", exception_code),
+            &format!("0x{:02X} ({})", exception_code, desc),
         );
         return Some(60);
     }
+
 
     if function != 0x03 {
         push_line(
@@ -306,5 +349,107 @@ async fn modbus_read_holding_registers(
     );
 
     // 80 = clean function + registers parsed
+    Some(80)
+}
+fn modbus_exception_description(code: u8) -> &'static str {
+    match code {
+        0x01 => "Illegal Function",
+        0x02 => "Illegal Data Address",
+        0x03 => "Illegal Data Value",
+        0x04 => "Server Device Failure",
+        0x05 => "Acknowledge",
+        0x06 => "Server Device Busy",
+        0x08 => "Memory Parity Error",
+        0x0A => "Gateway Path Unavailable",
+        0x0B => "Gateway Target Device Failed to Respond",
+        _    => "Unknown Exception",
+    }
+}
+
+async fn modbus_read_input_registers(
+    stream: &mut TcpStream,
+    timeout_dur: Duration,
+    evidence: &mut String,
+) -> Option<u8> {
+    // MBAP + PDU (Function 0x04)
+    // 00 03 = Transaction ID
+    // 00 00 = Protocol ID
+    // 00 06 = Length
+    // FF    = Unit ID
+    // 04    = Function 0x04 (Read Input Registers)
+    // 00 00 = Starting address
+    // 00 01 = Number of registers
+    let request: [u8; 12] = [
+        0x00, 0x03, // Transaction ID
+        0x00, 0x00, // Protocol ID
+        0x00, 0x06, // Length
+        0xFF,       // Unit ID
+        0x04,       // Function 0x04
+        0x00, 0x00, // Starting address
+        0x00, 0x01, // Number of registers
+    ];
+
+    if timeout(timeout_dur, stream.write_all(&request))
+        .await
+        .is_err()
+    {
+        push_line(evidence, "modbus", "send_error_fc04");
+        return None;
+    }
+
+    let mut buf = [0u8; 1024];
+    let n = match timeout(timeout_dur, stream.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => {
+            push_line(evidence, "modbus", "no_response_fc04");
+            return None;
+        }
+    };
+
+    let resp = &buf[..n];
+    push_line(evidence, "modbus_raw_fc04", &format!("{:02X?}", resp));
+
+    if resp.len() < 10 {
+        push_line(evidence, "modbus", "short_response_fc04");
+        return Some(60);
+    }
+
+    let function = resp[7];
+
+    if function & 0x80 != 0 {
+        let exception_code = resp[8];
+        let desc = modbus_exception_description(exception_code);
+        push_line(
+            evidence,
+            "modbus_exception_fc04",
+            &format!("0x{:02X} ({})", exception_code, desc),
+        );
+        return Some(60);
+    }
+
+    if function != 0x04 {
+        push_line(
+            evidence,
+            "modbus_fc04_unexpected_function",
+            &format!("0x{:02X}", function),
+        );
+        return Some(60);
+    }
+
+    push_line(evidence, "modbus_function_fc04", "Read Input Registers");
+
+    let byte_count = resp[8] as usize;
+    if resp.len() < 9 + byte_count {
+        push_line(evidence, "modbus", "fc04_byte_count_mismatch");
+        return Some(70);
+    }
+
+    let registers = &resp[9..9 + byte_count];
+    push_line(
+        evidence,
+        "modbus_input_registers",
+        &format!("{:02X?}", registers),
+    );
+
     Some(80)
 }
