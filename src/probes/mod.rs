@@ -33,6 +33,7 @@ pub mod mqtt;
 pub mod memcached;
 pub mod modbus;
 pub mod radius;
+pub mod coap;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
 pub use udp::udp_probe;
@@ -87,6 +88,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::memcached::MemcachedProbe{}),
         Arc::new(crate::probes::modbus::ModbusProbe{}),
         Arc::new(crate::probes::radius::RadiusProbe{}),
+        Arc::new(crate::probes::coap::CoapProbe{}),
        
         // add more probes here
     ]

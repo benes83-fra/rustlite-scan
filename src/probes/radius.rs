@@ -1,8 +1,8 @@
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration};
-use rand::RngCore;
 use crate::probes::{Probe, ProbeContext, helper::push_line};
 use crate::service::ServiceFingerprint;
+use md5::{Md5, Digest};
 
 pub struct RadiusProbe;
 
@@ -27,38 +27,42 @@ impl Probe for RadiusProbe {
 
         let target = format!("{}:{}", ip, port);
 
-        // --- 2) Build Access-Request (Code 1) ---
-        let mut authenticator = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut authenticator);
+        // --- 2) Build minimal Access-Request (Code 1) ---
 
         // Attributes:
         // User-Name (1) = "rustlite-scan"
         let username = b"rustlite-scan";
         let mut attrs: Vec<u8> = Vec::new();
-        // Type
-        attrs.push(1);
-        // Length = 2(header) + len(username)
-        attrs.push((2 + username.len()) as u8);
-        // Value
+        attrs.push(1); // Type: User-Name
+        attrs.push((2 + username.len()) as u8); // Length
         attrs.extend_from_slice(username);
 
-        // NAS-Port (5) = 1 (integer)
-        attrs.push(5);
-        attrs.push(6); // 2 + 4 bytes
-        attrs.extend_from_slice(&1u32.to_be_bytes());
-
-        // Build full packet
+        // RADIUS packet structure:
         // Code (1) | Identifier (1) | Length (2) | Authenticator (16) | Attributes...
         let length = (20 + attrs.len()) as u16;
-        let mut packet: Vec<u8> = Vec::with_capacity(length as usize);
-        packet.push(1); // Access-Request
-        packet.push(1); // Identifier
+        let secret = b"testing123";
+
+        // Build packet with zeroed authenticator for hashing
+        let mut packet_wo_auth: Vec<u8> = Vec::new();
+        packet_wo_auth.push(1); // Code = Access-Request
+        packet_wo_auth.push(1); // Identifier
+        packet_wo_auth.extend_from_slice(&length.to_be_bytes());
+        packet_wo_auth.extend_from_slice(&[0u8; 16]); // placeholder authenticator
+        packet_wo_auth.extend_from_slice(&attrs);
+
+        // Compute Request Authenticator
+        let authenticator = radius_request_authenticator(secret, &packet_wo_auth);
+
+        // Build final packet with real authenticator
+        let mut packet: Vec<u8> = Vec::new();
+        packet.push(1);
+        packet.push(1);
         packet.extend_from_slice(&length.to_be_bytes());
         packet.extend_from_slice(&authenticator);
         packet.extend_from_slice(&attrs);
 
         // --- 3) Send packet ---
-        if let Err(_) = socket.send_to(&packet, &target).await {
+        if socket.send_to(&packet, &target).await.is_err() {
             push_line(&mut evidence, "radius", "udp_send_failed");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "radius", evidence);
             fp.confidence = confidence;
@@ -68,7 +72,7 @@ impl Probe for RadiusProbe {
         // --- 4) Receive response ---
         let mut buf = [0u8; 2048];
         let (n, _) = match timeout(timeout_dur, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, addr))) if n > 0 => (n, addr),
+            Ok(Ok((n, _addr))) if n > 0 => (n, _addr),
             _ => {
                 push_line(&mut evidence, "radius", "no_response");
                 let mut fp = ServiceFingerprint::from_banner(ip, port, "radius", evidence);
@@ -110,10 +114,9 @@ impl Probe for RadiusProbe {
             &format!("0x{:02X} ({})", code, code_str),
         );
 
-        // We got a well-formed RADIUS response; bump confidence.
         confidence = 75;
 
-        // --- 6) Parse a couple of attributes (User-Name, NAS-IP-Address) ---
+        // --- 6) Parse a couple of attributes (User-Name, NAS-IP-Address, Vendor-Specific) ---
         if resp_len as usize <= resp.len() {
             let mut offset = 20usize;
             while offset + 2 <= resp_len as usize && offset + 2 <= resp.len() {
@@ -125,7 +128,8 @@ impl Probe for RadiusProbe {
                 let value = &resp[offset + 2..offset + alen];
 
                 match atype {
-                    1 => { // User-Name
+                    1 => {
+                        // User-Name
                         if let Ok(s) = std::str::from_utf8(value) {
                             push_line(&mut evidence, "radius_user_name", s);
                         } else {
@@ -136,7 +140,8 @@ impl Probe for RadiusProbe {
                             );
                         }
                     }
-                    4 => { // NAS-IP-Address
+                    4 => {
+                        // NAS-IP-Address
                         if value.len() == 4 {
                             let ip = format!("{}.{}.{}.{}", value[0], value[1], value[2], value[3]);
                             push_line(&mut evidence, "radius_nas_ip_address", &ip);
@@ -148,7 +153,8 @@ impl Probe for RadiusProbe {
                             );
                         }
                     }
-                    26 => { // Vendor-Specific
+                    26 => {
+                        // Vendor-Specific
                         push_line(
                             &mut evidence,
                             "radius_vendor_specific",
@@ -156,8 +162,7 @@ impl Probe for RadiusProbe {
                         );
                     }
                     _ => {
-                        // For now, just record that we saw other attributes
-                        // You can expand this later if needed.
+                        // ignore other attributes for now
                     }
                 }
 
@@ -194,4 +199,15 @@ impl Probe for RadiusProbe {
     fn name(&self) -> &'static str {
         "radius"
     }
+}
+
+fn radius_request_authenticator(secret: &[u8], packet_without_auth: &[u8]) -> [u8; 16] {
+    let mut hasher = Md5::new();
+    hasher.update(packet_without_auth);
+    hasher.update(secret);
+    let result = hasher.finalize();
+
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&result[..16]);
+    out
 }
