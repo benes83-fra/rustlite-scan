@@ -172,7 +172,18 @@ impl Probe for CoapProbe {
                         s
                     };
                     push_line(&mut evidence, "coap_payload_text", snippet);
-
+                    let resources = parse_rfc6690(s);
+                    for res in resources { 
+                        push_line(&mut evidence, "coap_resource", &res.path); 
+                        
+                        for (k, v) in res.attrs { 
+                            if v.is_empty() { 
+                                push_line(&mut  evidence, "coap_attr_flag", &format!("{} (flag)", k));
+                             } else {
+                                 push_line(&mut evidence, "coap_attr", &format!("{}={}", k, v));
+                                } 
+                        } 
+                    }
                     // Heuristic vendor hints from payload
                     let upper = snippet.to_uppercase();
                     let mut vendor = None;
@@ -288,4 +299,71 @@ fn build_coap_get_well_known_core(msg_id: u16, token: &[u8]) -> Vec<u8> {
 
     // No payload marker / payload for the request
     packet
+}
+#[derive(Debug)]
+struct CoapResource {
+    path: String,
+    attrs: Vec<(String, String)>, // key="value" or key="" for flags
+}
+
+fn parse_rfc6690(payload: &str) -> Vec<CoapResource> {
+    let mut resources = Vec::new();
+
+    // Split by comma: each entry is a resource description
+    for entry in payload.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        // Must start with </path>
+        if !entry.starts_with('<') {
+            continue;
+        }
+
+        let end = match entry.find('>') {
+            Some(i) => i,
+            None => continue,
+        };
+
+        let path = entry[1..end].to_string(); // strip < >
+
+        let mut attrs = Vec::new();
+        let mut rest = &entry[end + 1..];
+
+        // Parse attributes: ;key=value or ;flag
+        while let Some(idx) = rest.find(';') {
+            rest = &rest[idx + 1..];
+
+            // Find next semicolon or end
+            let next = rest.find(';').unwrap_or(rest.len());
+            let attr = rest[..next].trim();
+
+            if attr.is_empty() {
+                continue;
+            }
+
+            // key=value or key="value"
+            if let Some(eq) = attr.find('=') {
+                let key = attr[..eq].trim().to_string();
+                let mut val = attr[eq + 1..].trim().to_string();
+
+                // Strip quotes if present
+                if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+                    val = val[1..val.len() - 1].to_string();
+                }
+
+                attrs.push((key, val));
+            } else {
+                // Flag attribute: e.g. "obs"
+                attrs.push((attr.to_string(), "".to_string()));
+            }
+
+            rest = &rest[next..];
+        }
+
+        resources.push(CoapResource { path, attrs });
+    }
+
+    resources
 }
