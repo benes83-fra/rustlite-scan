@@ -133,31 +133,55 @@ impl Probe for CoapProbe {
         }
 
         // Options: we’ll just skip them until payload marker (0xFF) or end
-        while offset < resp.len() {
-            if resp[offset] == 0xFF {
+        let mut options: Vec<(u16, Vec<u8>)> = Vec::new();
+            let mut current_opt_num: u16 = 0;
+
+            while offset < resp.len() {
+                if resp[offset] == 0xFF {
+                    offset += 1;
+                    break;
+                }
+
+                let opt_byte = resp[offset];
                 offset += 1;
-                break;
-            }
 
-            // Option byte: 4 bits delta, 4 bits length
-            let opt_byte = resp[offset];
-            let opt_delta = (opt_byte & 0b1111_0000) >> 4;
-            let opt_len = (opt_byte & 0b0000_1111) as usize;
-            offset += 1;
+                let delta = (opt_byte >> 4) & 0x0F;
+                let len = (opt_byte & 0x0F) as usize;
 
-            // Extended delta/length not handled in detail here — if present, bail out gracefully
-            if opt_delta == 13 || opt_delta == 14 || opt_len == 13 || opt_len == 14 {
-                // For fingerprinting, we don't need full option decoding
-                break;
-            }
+                // Extended delta/length not supported here
+                if delta == 13 || delta == 14 || len == 13 || len == 14 {
+                    break;
+                }
 
-            if offset + opt_len > resp.len() {
-                break;
-            }
+                current_opt_num += delta as u16;
 
-            let _opt_val = &resp[offset..offset + opt_len];
-            offset += opt_len;
+                if offset + len > resp.len() {
+                    break;
+                }
+
+                let val = resp[offset..offset + len].to_vec();
+                offset += len;
+
+                options.push((current_opt_num, val));
         }
+        if let Some(cf) = parse_content_format(&options) {
+            push_line(&mut evidence, "coap_content_format", &format!("{}", cf));
+
+            // Optional: human-readable mapping
+            let cf_name = match cf {
+                0 => "text/plain",
+                40 => "application/link-format",
+                41 => "application/xml",
+                42 => "application/octet-stream",
+                47 => "application/exi",
+                50 => "application/json",
+                60 => "application/cbor",
+                _ => "unknown",
+            };
+
+            push_line(&mut evidence, "coap_content_format_name", cf_name);
+        }
+
 
         // Payload
         if offset < resp.len() {
@@ -173,6 +197,63 @@ impl Probe for CoapProbe {
                     };
                     push_line(&mut evidence, "coap_payload_text", snippet);
                     let resources = parse_rfc6690(s);
+
+                    let mut enum_results = Vec::new();
+
+                    for res in &resources {
+                        let path = &res.path;
+
+                        // Build GET request for this resource
+                        let msg_id: u16 = rand::thread_rng().gen();
+                        let token: [u8; 2] = rand::random();
+                        let req = build_coap_get(path, msg_id, &token);
+
+                        // Send request
+                        if socket.send_to(&req, &target).await.is_err() {
+                            continue;
+                        }
+
+                        // Receive response (short timeout)
+                        let mut buf2 = [0u8; 2048];
+                        if let Ok(Ok((n2, _))) = timeout(Duration::from_millis(500), socket.recv_from(&mut buf2)).await {
+                            let resp2 = &buf2[..n2];
+
+                            enum_results.push((path.clone(), resp2.to_vec()));
+                        }
+                    }
+                    for (path, raw) in enum_results {
+                        push_line(&mut evidence, "coap_enum_path", &path);
+
+                        // Find payload marker (0xFF)
+                        let payload = if let Some(idx) = raw.iter().position(|b| *b == 0xFF) {
+                            &raw[idx + 1..]
+                        } else {
+                            &raw[..]
+                        };
+
+                        if payload.is_empty() {
+                            push_line(&mut evidence, "coap_enum_payload", "<empty>");
+                            continue;
+                        }
+
+                        // Try UTF-8
+                     // Try UTF-8 first
+                        if let Ok(s) = std::str::from_utf8(payload) {
+                            push_line(&mut evidence, "coap_enum_payload_text", s.trim());
+                        } else {
+                            // Try CBOR
+                            if let Some(decoded) = try_parse_cbor(payload) {
+                                push_line(&mut evidence, "coap_enum_payload_cbor", &decoded);
+                            } else {
+                                push_line(&mut evidence, "coap_enum_payload_raw", &format!("{:02X?}", payload));
+                            }
+                        }
+
+                    }
+
+
+
+
                     for res in &resources { 
                         push_line(&mut evidence, "coap_resource", &res.path); 
                         
@@ -482,7 +563,8 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
     // --- LwM2M (OMA Lightweight M2M) ---
     CoapVendorSignature {
         vendor: "lwm2m",
-        path_contains: &["rd", "d", "s", "p"],
+        path_contains: &["rd", "d/"], // LwM2M uses /rd, /d/<id>, /s/<id>
+
         rt_contains: &["oma.lwm2m"],
         if_contains: &["lwm2m"],
         payload_contains: &["lwm2m", "oma"],
@@ -630,4 +712,67 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
     }
 
     caps
+}
+
+
+fn build_coap_get(path: &str, msg_id: u16, token: &[u8]) -> Vec<u8> {
+    let tkl = token.len();
+    let first =
+        ((COAP_VERSION & 0x03) << 6) |
+        ((CoapType::Confirmable as u8 & 0x03) << 4) |
+        (tkl as u8 & 0x0F);
+
+    let code = CoapCode::Get as u8;
+    let msg_id_bytes = msg_id.to_be_bytes();
+
+    let mut packet = Vec::new();
+    packet.push(first);
+    packet.push(code);
+    packet.extend_from_slice(&msg_id_bytes);
+    packet.extend_from_slice(token);
+
+    // Encode Uri-Path options
+    let mut last_opt = 0u8;
+    for segment in path.trim_start_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+
+        let opt_num = 11u8; // Uri-Path
+        let delta = opt_num - last_opt;
+        last_opt = opt_num;
+
+        let len = segment.len() as u8;
+        let opt_byte = ((delta & 0x0F) << 4) | (len & 0x0F);
+
+        packet.push(opt_byte);
+        packet.extend_from_slice(segment.as_bytes());
+    }
+
+    packet
+}
+
+fn parse_content_format(options: &[(u16, Vec<u8>)]) -> Option<u16> {
+    for (opt_num, opt_val) in options {
+        if *opt_num == 12 {
+            // Content-Format is an unsigned integer encoded in 0–2 bytes
+            if opt_val.is_empty() {
+                return Some(0);
+            }
+            if opt_val.len() == 1 {
+                return Some(opt_val[0] as u16);
+            }
+            if opt_val.len() == 2 {
+                return Some(u16::from_be_bytes([opt_val[0], opt_val[1]]));
+            }
+        }
+    }
+    None
+}
+
+fn try_parse_cbor(payload: &[u8]) -> Option<String> {
+    match serde_cbor::from_slice::<serde_cbor::Value>(payload) {
+        Ok(val) => Some(format!("{:?}", val)),
+        Err(_) => None,
+    }
 }
