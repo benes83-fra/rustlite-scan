@@ -52,7 +52,7 @@ impl Probe for NtpProbe {
         let resp = &buf[..resp_len];
 
         // Parse header fields
-        let li = (resp[0] >> 6) & 0b11;
+        let _li = (resp[0] >> 6) & 0b11;
         let vn = (resp[0] >> 3) & 0b111;
         let mode = resp[0] & 0b111;
         let stratum = resp[1];

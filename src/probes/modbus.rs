@@ -28,7 +28,7 @@ impl Probe for ModbusProbe {
         // --- 2) First attempt: Function 0x11 (Report Server ID) ---
         let mut got_useful_response = false;
 
-        if let Some((resp, parsed_conf, maybe_vendor_conf)) =
+        if let Some((_resp, parsed_conf, maybe_vendor_conf)) =
             modbus_report_server_id(&mut stream, timeout_dur, &mut evidence).await
         {
             confidence = confidence.max(parsed_conf);

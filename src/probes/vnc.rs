@@ -15,7 +15,7 @@ impl Probe for VncProbe {
         let addr = format!("{}:{}", ip, port);
 
         // Connect
-        let mut stream = match timeout(timeout_dur, TcpStream::connect(&addr)).await {
+        let stream = match timeout(timeout_dur, TcpStream::connect(&addr)).await {
             Ok(Ok(s)) => s,
             _ => {
                 push_line(&mut evidence, "vnc", "connect_error");

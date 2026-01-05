@@ -200,7 +200,7 @@ async fn read_amqp_frame(
 enum AmqpFieldValue {
     Str(String),
     Bool(bool),
-    Int(i32),
+    Int(),
     Table(AmqpTable),
     Null,
     // other AMQP types omitted (not needed for RabbitMQ Connection.Start)
@@ -396,8 +396,8 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
                 if buf.len() < cur + 4 {
                     if strict { return None; } else { break; }
                 }
-                let v = i32::from_be_bytes([buf[cur], buf[cur + 1], buf[cur + 2], buf[cur + 3]]);
-                (AmqpFieldValue::Int(v), cur + 4)
+                let _v = i32::from_be_bytes([buf[cur], buf[cur + 1], buf[cur + 2], buf[cur + 3]]);
+                (AmqpFieldValue::Int(), cur + 4)
             }
             b'F' => {
                 // nested table (lenient parsing inside)
@@ -413,7 +413,7 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
                 (AmqpFieldValue::Null, cur)
             }
             // Unknown field type: skip or fail depending on strictness
-            other => {
+            _other => {
                 // In lenient mode, we stop parsing to avoid misalignment; in strict, fail.
                 // You can enhance this with heuristics later.
                 if strict {

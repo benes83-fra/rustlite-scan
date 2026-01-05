@@ -173,10 +173,10 @@ impl Probe for CoapProbe {
                     };
                     push_line(&mut evidence, "coap_payload_text", snippet);
                     let resources = parse_rfc6690(s);
-                    for res in resources { 
+                    for res in &resources { 
                         push_line(&mut evidence, "coap_resource", &res.path); 
                         
-                        for (k, v) in res.attrs { 
+                        for (k, v) in &res.attrs { 
                             if v.is_empty() { 
                                 push_line(&mut  evidence, "coap_attr_flag", &format!("{} (flag)", k));
                              } else {
@@ -185,24 +185,26 @@ impl Probe for CoapProbe {
                         } 
                     }
                     // Heuristic vendor hints from payload
-                    let upper = snippet.to_uppercase();
-                    let mut vendor = None;
-                    if upper.contains("HUE") || upper.contains("PHILIPS") {
-                        vendor = Some("philips_hue");
-                    } else if upper.contains("SHELLY") {
-                        vendor = Some("shelly");
-                    } else if upper.contains("SONOFF") {
-                        vendor = Some("sonoff");
-                    } else if upper.contains("TUYA") {
-                        vendor = Some("tuya");
-                    } else if upper.contains("BOSCH") {
-                        vendor = Some("bosch");
-                    }
-
+                  
+                    let vendor = detect_coap_vendor(&resources, s);
                     if let Some(v) = vendor {
-                        push_line(&mut evidence, "coap_vendor", v);
+                         push_line(&mut evidence, "coap_vendor", v); 
+                         confidence = confidence.max(85); 
+                    }
+                    let capabilities = detect_coap_capabilities(&resources);
+
+                    for cap in &capabilities {
+                        push_line(&mut evidence, "coap_capability", cap);
                         confidence = confidence.max(80);
                     }
+                    push_line(&mut evidence, "coap_summary", &format!(
+                        "Device exposes {} resource(s); capabilities: {}; vendor: {}",
+                        resources.len(),
+                        capabilities.join(", "),
+                        vendor.unwrap_or("unknown")
+                    ));
+
+
                 } else {
                     push_line(
                         &mut evidence,
@@ -366,4 +368,266 @@ fn parse_rfc6690(payload: &str) -> Vec<CoapResource> {
     }
 
     resources
+}
+
+
+fn detect_coap_vendor(resources: &[CoapResource], payload: &str) -> Option<&'static str> {
+    let payload_lower = payload.to_lowercase();
+
+    for sig in COAP_VENDOR_SIGNATURES {
+        // Path match
+        let path_hit = sig.path_contains.iter().any(|needle| {
+            resources.iter().any(|r| r.path.to_lowercase().contains(needle))
+        });
+
+        // rt= match
+        let rt_hit = sig.rt_contains.iter().any(|needle| {
+            resources.iter().any(|r| {
+                r.attrs.iter().any(|(k, v)| {
+                    k == "rt" && v.to_lowercase().contains(needle)
+                })
+            })
+        });
+
+        // if= match
+        let if_hit = sig.if_contains.iter().any(|needle| {
+            resources.iter().any(|r| {
+                r.attrs.iter().any(|(k, v)| {
+                    k == "if" && v.to_lowercase().contains(needle)
+                })
+            })
+        });
+
+        // Payload match
+        let payload_hit = sig.payload_contains.iter().any(|needle| {
+            payload_lower.contains(needle)
+        });
+
+        if path_hit || rt_hit || if_hit || payload_hit {
+            return Some(sig.vendor);
+        }
+    }
+
+    None
+}
+
+
+
+
+#[derive(Debug)]
+pub struct CoapVendorSignature {
+    pub vendor: &'static str,
+    pub path_contains: &'static [&'static str],
+    pub rt_contains: &'static [&'static str],
+    pub if_contains: &'static [&'static str],
+    pub payload_contains: &'static [&'static str],
+}
+
+
+pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
+    // --- Philips Hue ---
+    CoapVendorSignature {
+        vendor: "philips_hue",
+        path_contains: &["lights", "sensors", "groups"],
+        rt_contains: &["core.light", "core.sensor", "hue"],
+        if_contains: &["sensor", "light"],
+        payload_contains: &["philips", "hue"],
+    },
+
+    // --- IKEA Tradfri ---
+    CoapVendorSignature {
+        vendor: "ikea_tradfri",
+        path_contains: &["15001", "15004", "tradfri"],
+        rt_contains: &["core.light", "core.group"],
+        if_contains: &[],
+        payload_contains: &["tradfri", "ikea"],
+    },
+
+    // --- Shelly ---
+    CoapVendorSignature {
+        vendor: "shelly",
+        path_contains: &["shelly", "rpc"],
+        rt_contains: &["shelly"],
+        if_contains: &[],
+        payload_contains: &["shelly"],
+    },
+
+    // --- Sonoff ---
+    CoapVendorSignature {
+        vendor: "sonoff",
+        path_contains: &["zeroconf", "sonoff"],
+        rt_contains: &[],
+        if_contains: &[],
+        payload_contains: &["sonoff"],
+    },
+
+    // --- Tuya ---
+    CoapVendorSignature {
+        vendor: "tuya",
+        path_contains: &["tuya"],
+        rt_contains: &[],
+        if_contains: &[],
+        payload_contains: &["tuya"],
+    },
+
+    // --- Bosch ---
+    CoapVendorSignature {
+        vendor: "bosch",
+        path_contains: &["bosch", "device"],
+        rt_contains: &["bosch"],
+        if_contains: &[],
+        payload_contains: &["bosch"],
+    },
+
+    // --- LwM2M (OMA Lightweight M2M) ---
+    CoapVendorSignature {
+        vendor: "lwm2m",
+        path_contains: &["rd", "d", "s", "p"],
+        rt_contains: &["oma.lwm2m"],
+        if_contains: &["lwm2m"],
+        payload_contains: &["lwm2m", "oma"],
+    },
+
+    // --- Generic IoT sensors ---
+    CoapVendorSignature {
+        vendor: "generic_sensor",
+        path_contains: &["sensor", "sensors", "obs"],
+        rt_contains: &["sensor", "observe", "temperature", "humidity"],
+        if_contains: &["sensor"],
+        payload_contains: &["sensor", "observe"],
+    },
+];
+
+#[derive(Debug)]
+pub struct CoapCapabilitySignature {
+    pub capability: &'static str,
+    pub path_contains: &'static [&'static str],
+    pub rt_contains: &'static [&'static str],
+    pub if_contains: &'static [&'static str],
+    pub flags: &'static [&'static str],
+}
+
+pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
+    // --- Observable resource ---
+    CoapCapabilitySignature {
+        capability: "observable",
+        path_contains: &["obs"],
+        rt_contains: &["observe"],
+        if_contains: &[],
+        flags: &["obs"],
+    },
+
+    // --- Temperature sensor ---
+    CoapCapabilitySignature {
+        capability: "temperature_sensor",
+        path_contains: &["temp", "temperature"],
+        rt_contains: &["temperature", "temperature-c"],
+        if_contains: &["sensor"],
+        flags: &[],
+    },
+
+    // --- Humidity sensor ---
+    CoapCapabilitySignature {
+        capability: "humidity_sensor",
+        path_contains: &["humidity"],
+        rt_contains: &["humidity"],
+        if_contains: &["sensor"],
+        flags: &[],
+    },
+
+    // --- Light / lamp ---
+    CoapCapabilitySignature {
+        capability: "light",
+        path_contains: &["light", "lights"],
+        rt_contains: &["core.light", "light"],
+        if_contains: &["light"],
+        flags: &[],
+    },
+
+    // --- Switch / relay ---
+    CoapCapabilitySignature {
+        capability: "switch",
+        path_contains: &["switch", "relay"],
+        rt_contains: &["switch"],
+        if_contains: &["control"],
+        flags: &[],
+    },
+
+    // --- Thermostat ---
+    CoapCapabilitySignature {
+        capability: "thermostat",
+        path_contains: &["thermostat"],
+        rt_contains: &["thermostat"],
+        if_contains: &[],
+        flags: &[],
+    },
+
+    // --- Generic sensor ---
+    CoapCapabilitySignature {
+        capability: "sensor",
+        path_contains: &["sensor", "sensors"],
+        rt_contains: &["sensor"],
+        if_contains: &["sensor"],
+        flags: &[],
+    },
+
+    // --- Generic actuator ---
+    CoapCapabilitySignature {
+        capability: "actuator",
+        path_contains: &["actuator"],
+        rt_contains: &["actuator"],
+        if_contains: &["control"],
+        flags: &[],
+    },
+];
+fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
+    let mut caps = Vec::new();
+
+    for sig in COAP_CAPABILITY_SIGNATURES {
+        let mut hit = false;
+
+        // Path match
+        if sig.path_contains.iter().any(|needle| {
+            resources.iter().any(|r| r.path.to_lowercase().contains(needle))
+        }) {
+            hit = true;
+        }
+
+        // rt= match
+        if sig.rt_contains.iter().any(|needle| {
+            resources.iter().any(|r| {
+                r.attrs.iter().any(|(k, v)| {
+                    k == "rt" && v.to_lowercase().contains(needle)
+                })
+            })
+        }) {
+            hit = true;
+        }
+
+        // if= match
+        if sig.if_contains.iter().any(|needle| {
+            resources.iter().any(|r| {
+                r.attrs.iter().any(|(k, v)| {
+                    k == "if" && v.to_lowercase().contains(needle)
+                })
+            })
+        }) {
+            hit = true;
+        }
+
+        // Flag match
+        if sig.flags.iter().any(|needle| {
+            resources.iter().any(|r| {
+                r.attrs.iter().any(|(k, _)| k == needle)
+            })
+        }) {
+            hit = true;
+        }
+
+        if hit {
+            caps.push(sig.capability);
+        }
+    }
+
+    caps
 }
