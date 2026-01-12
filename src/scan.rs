@@ -6,6 +6,7 @@ use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
 use crate::service::ServiceFingerprint;
 use crate::types::{HostResult, PortResult, UdpMetrics};
 use crate::utils::RateLimiter;
+use crate::os::os_fingerprint::infer_os_from_ports;
 use anyhow::Context;
 use anyhow::Result;
 use cidr::IpCidr;
@@ -31,6 +32,7 @@ use tokio::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Semaphore;
 use std::time::Duration;
+
 
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
@@ -962,8 +964,20 @@ pub async fn scan_host(
     }
     // --- End probe invocation block ---
 
-    let fingerprints = crate::service::consolidate_by_port(fingerprints);
+        // --- End probe invocation block ---
+
+    let mut fingerprints = crate::service::consolidate_by_port(fingerprints);
+
+    // Host-level OS inference (does NOT touch probe system)
+    if cli.service_probes {
+        if let Some(os_fp) = infer_os_from_ports(&ip, &results) {
+            eprint!("OS results {:?}", &results);
+            fingerprints.push(os_fp);
+        }
+    }
+
     pb.finish_with_message("Scan complete");
+
 
     // Build limiter info for diagnostics
     let host_lim_info = host_limiter.as_ref().map(|hl| crate::types::LimiterInfo {

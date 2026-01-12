@@ -89,6 +89,7 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::modbus::ModbusProbe{}),
         Arc::new(crate::probes::radius::RadiusProbe{}),
         Arc::new(crate::probes::coap::CoapProbe{}),
+      
        
         // add more probes here
     ]

@@ -4,10 +4,12 @@ mod netutils;
 mod scan;
 mod probes;
 mod utils;
+mod os;
 mod service;
 use tracing_subscriber;
 use tracing_subscriber::{EnvFilter};
 use anyhow::Result;
+
 use cli::Cli;
 pub fn init_tracing() {
     let _ = tracing_subscriber::fmt()

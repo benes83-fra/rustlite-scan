@@ -5,7 +5,7 @@ pub mod scan;
 pub mod probes;
 pub mod utils;
 pub mod service;
-
+pub mod os;
 pub use tracing_subscriber;
 pub use tracing_subscriber::filter::EnvFilter;
 pub use scan::run;
