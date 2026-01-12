@@ -6,7 +6,7 @@ use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
 use crate::service::ServiceFingerprint;
 use crate::types::{HostResult, PortResult, UdpMetrics};
 use crate::utils::RateLimiter;
-use crate::os::os_fingerprint::infer_os_from_ports;
+use crate::os::os_fingerprint::infer_os_for_host;
 use anyhow::Context;
 use anyhow::Result;
 use cidr::IpCidr;
@@ -970,7 +970,7 @@ pub async fn scan_host(
 
     // Host-level OS inference (does NOT touch probe system)
     if cli.service_probes {
-        if let Some(os_fp) = infer_os_from_ports(&ip, &results) {
+        if let Some(os_fp) = infer_os_for_host(&ip, &results, &fingerprints) {
             eprint!("OS results {:?}", &results);
             fingerprints.push(os_fp);
         }
