@@ -86,6 +86,36 @@ pub fn infer_os(
             }
         }
     }
+    // ------------------------------
+    // SMB heuristics
+    // ------------------------------
+    let mut smb_evidence = String::new();
+
+    for fp in service_fps {
+        if fp.protocol != "smb" {
+            continue;
+        }
+
+        if let Some(ev) = &fp.evidence {
+            let e = ev.to_lowercase();
+            smb_evidence.push_str(&format!("smb: {}\n", ev.replace('\n', " ")));
+
+            // Modern SMB2/3 capabilities → modern Windows or Samba 4.x
+            if e.contains("multi_channel") || e.contains("persistent_handles") {
+                score_windows += 40;
+            }
+
+            // Anonymous denied → Windows default behavior
+            if e.contains("anonymous_not_allowed") {
+                score_windows += 30;
+            }
+
+            // If we ever get dialect strings, we can add:
+            // if e.contains("3.1.1") { score_windows += 80; }
+            // if e.contains("3.0.2") { score_windows += 70; }
+            // etc.
+        }
+    }
 
     // ------------------------------
     // 4. Combine scores
