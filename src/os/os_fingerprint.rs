@@ -52,6 +52,14 @@ pub fn infer_os(
     if open_ports.contains(&23) || open_ports.contains(&161) {
         score_network += 40;
     }
+    if open_ports.contains(&5353) {
+        score_macos += 40;
+    }
+    if open_ports.contains(&631) {
+        score_macos += 20;
+    }
+    
+
 
     // ------------------------------
     // 3. SSH banner heuristics
@@ -84,6 +92,12 @@ pub fn infer_os(
             if b.contains("openssh_for_windows") || b.contains("winssh") || b.contains("powershell") {
                 score_windows += 80; // stronger override
             }
+            if b.contains("darwin") || b.contains("apple") {
+                score_macos += 60;
+                score_windows -= 40;
+
+            }
+
         }
     }
     // ------------------------------
@@ -109,6 +123,12 @@ pub fn infer_os(
             if e.contains("anonymous_not_allowed") {
                 score_windows += 30;
             }
+            if e.contains("multi_channel") {
+                score_windows += 40;
+            } else {
+                score_macos += 20; // macOS SMB is simpler
+            }
+
 
             // If we ever get dialect strings, we can add:
             // if e.contains("3.1.1") { score_windows += 80; }
@@ -127,7 +147,14 @@ pub fn infer_os(
         ("bsd", score_bsd),
         ("network_device", score_network),
     ];
-
+    let max1 = scores.iter().max_by_key(|(_,s)|*s).unwrap().1;
+    let max2 =scores.iter().filter(|(_,s)| *s !=max1).max_by_key(|(_,s)| *s).unwrap().1;
+    if max2 > max1/2{
+        score_windows /=2;
+        score_linux /=2;
+        score_macos /=2;
+        score_bsd /=2;
+    }
     scores.sort_by(|a, b| b.1.cmp(&a.1));
     let (best_os, best_score) = scores[0];
 
