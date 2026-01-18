@@ -17,11 +17,11 @@ pub async fn tcp_probe(ip: &str, port: u16, timeout_ms: u64) -> PortResult {
                 Ok(mut iter) => match iter.next() {
                     Some(sa) => sa,
                     None => {
-                        return PortResult { port, protocol: "tcp", state: "unknown", banner: None };
+                        return PortResult { port, protocol: "tcp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None};
                     }
                 },
                 Err(_) => {
-                    return PortResult { port, protocol: "tcp", state: "unknown", banner: None };
+                    return PortResult { port, protocol: "tcp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None };
                 }
             }
         }
@@ -62,9 +62,9 @@ pub async fn tcp_probe(ip: &str, port: u16, timeout_ms: u64) -> PortResult {
                 _ => {}
             }
 
-            PortResult { port, protocol: "tcp", state: "open", banner }
+            PortResult { port, protocol: "tcp", state: "open", banner ,ttl: None, window_size :None, mss: None, df: None}
         }
-        Ok(Err(_)) => PortResult { port, protocol: "tcp", state: "closed", banner: None },
-        Err(_) => PortResult { port, protocol: "tcp", state: "filtered", banner: None },
+        Ok(Err(_)) => PortResult { port, protocol: "tcp", state: "closed", banner: None ,ttl: None, window_size :None, mss: None, df: None},
+        Err(_) => PortResult { port, protocol: "tcp", state: "filtered", banner: None , ttl: None, window_size :None, mss: None, df: None},
     }
 }

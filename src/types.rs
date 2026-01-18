@@ -7,7 +7,14 @@ pub struct PortResult {
     pub protocol: &'static str,
     pub state: &'static str,
     pub banner: Option<String>,
+
+    // NEW — all optional, so nothing breaks
+    pub ttl: Option<u8>,
+    pub window_size: Option<u32>,
+    pub mss: Option<u16>,
+    pub df: Option<bool>,
 }
+
 
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct UdpMetrics {

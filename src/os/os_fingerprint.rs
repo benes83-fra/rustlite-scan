@@ -7,14 +7,11 @@ pub struct OsGuess {
     pub evidence: String,
 }
 
-
-
 pub fn infer_os(
     ip: &str,
     ports: &[PortResult],
     service_fps: &[ServiceFingerprint],
 ) -> Option<ServiceFingerprint> {
-
     // ------------------------------
     // 1. Collect open ports
     // ------------------------------
@@ -29,7 +26,7 @@ pub fn infer_os(
     }
 
     // ------------------------------
-    // 2. Port-pattern heuristics
+    // 2. Base scores from ports
     // ------------------------------
     let mut score_windows = 0;
     let mut score_linux = 0;
@@ -52,17 +49,17 @@ pub fn infer_os(
     if open_ports.contains(&23) || open_ports.contains(&161) {
         score_network += 40;
     }
+
     if open_ports.contains(&5353) {
         score_macos += 40;
     }
+
     if open_ports.contains(&631) {
         score_macos += 20;
     }
-    
-
 
     // ------------------------------
-    // 3. SSH banner heuristics
+    // 3. SSH heuristics
     // ------------------------------
     let mut ssh_evidence = String::new();
 
@@ -75,8 +72,12 @@ pub fn infer_os(
             let b = evidence.to_lowercase();
             ssh_evidence.push_str(&format!("ssh_banner: {}\n", evidence.replace('\n', " ")));
 
-            if b.contains("ubuntu") || b.contains("debian") || b.contains("centos")
-                || b.contains("fedora") || b.contains("alpine") || b.contains("arch")
+            if b.contains("ubuntu")
+                || b.contains("debian")
+                || b.contains("centos")
+                || b.contains("fedora")
+                || b.contains("alpine")
+                || b.contains("arch")
             {
                 score_linux += 60;
             }
@@ -85,23 +86,21 @@ pub fn infer_os(
                 score_bsd += 70;
             }
 
-            if b.contains("darwin") {
-                score_macos += 40;
+            if b.contains("openssh_for_windows") || b.contains("winssh") || b.contains("powershell") {
+                score_windows += 80;
+                score_linux -= 20;
+                score_macos -= 20;
             }
 
-            if b.contains("openssh_for_windows") || b.contains("winssh") || b.contains("powershell") {
-                score_windows += 80; // stronger override
-            }
             if b.contains("darwin") || b.contains("apple") {
                 score_macos += 60;
                 score_windows -= 40;
-
             }
-
         }
     }
+
     // ------------------------------
-    // SMB heuristics
+    // 4. SMB heuristics
     // ------------------------------
     let mut smb_evidence = String::new();
 
@@ -114,32 +113,91 @@ pub fn infer_os(
             let e = ev.to_lowercase();
             smb_evidence.push_str(&format!("smb: {}\n", ev.replace('\n', " ")));
 
-            // Modern SMB2/3 capabilities → modern Windows or Samba 4.x
             if e.contains("multi_channel") || e.contains("persistent_handles") {
                 score_windows += 40;
             }
 
-            // Anonymous denied → Windows default behavior
             if e.contains("anonymous_not_allowed") {
                 score_windows += 30;
             }
+
             if e.contains("multi_channel") {
                 score_windows += 40;
             } else {
-                score_macos += 20; // macOS SMB is simpler
+                score_macos += 20;
             }
-
-
-            // If we ever get dialect strings, we can add:
-            // if e.contains("3.1.1") { score_windows += 80; }
-            // if e.contains("3.0.2") { score_windows += 70; }
-            // etc.
         }
     }
 
     // ------------------------------
-    // 4. Combine scores
+    // 5. HTTP heuristics
     // ------------------------------
+    let mut http_evidence = String::new();
+
+    for fp in service_fps {
+        if fp.protocol != "http" && fp.protocol != "https" {
+            continue;
+        }
+
+        if let Some(ev) = &fp.evidence {
+            let e = ev.to_lowercase();
+            http_evidence.push_str(&format!("http: {}\n", ev.replace('\n', " ")));
+
+            if e.contains("microsoft-iis") {
+                score_windows += 80;
+            }
+
+            if e.contains("win64") || e.contains("win32") {
+                score_windows += 40;
+            }
+
+            if e.contains("(unix)") {
+                score_linux += 30;
+            }
+
+            if e.contains("nginx") {
+                score_linux += 20;
+            }
+
+            if e.contains("caddy") {
+                score_linux += 15;
+            }
+
+            if e.contains("darwin") || e.contains("apple") {
+                score_macos += 40;
+                score_windows -= 20;
+            }
+
+            if e.contains("let's encrypt") {
+                score_linux += 10;
+            }
+        }
+    }
+
+    // ------------------------------
+    // 6. Synthesis layer
+    // ------------------------------
+
+    // Clamp negatives
+    fn clamp_non_negative(v: &mut i32) {
+        if *v < 0 {
+            *v = 0;
+        }
+    }
+
+    let mut score_windows = score_windows as i32;
+    let mut score_linux = score_linux as i32;
+    let mut score_macos = score_macos as i32;
+    let mut score_bsd = score_bsd as i32;
+    let mut score_network = score_network as i32;
+
+    clamp_non_negative(&mut score_windows);
+    clamp_non_negative(&mut score_linux);
+    clamp_non_negative(&mut score_macos);
+    clamp_non_negative(&mut score_bsd);
+    clamp_non_negative(&mut score_network);
+
+    // Conflict dampening
     let mut scores = vec![
         ("windows", score_windows),
         ("linux", score_linux),
@@ -147,23 +205,44 @@ pub fn infer_os(
         ("bsd", score_bsd),
         ("network_device", score_network),
     ];
-    let max1 = scores.iter().max_by_key(|(_,s)|*s).unwrap().1;
-    let max2 =scores.iter().filter(|(_,s)| *s !=max1).max_by_key(|(_,s)| *s).unwrap().1;
-    if max2 > max1/2{
-        score_windows /=2;
-        score_linux /=2;
-        score_macos /=2;
-        score_bsd /=2;
-    }
-    scores.sort_by(|a, b| b.1.cmp(&a.1));
-    let (best_os, best_score) = scores[0];
 
-    if best_score == 0 {
+    let max1 = scores.iter().max_by_key(|(_, s)| *s).map(|(_, s)| *s).unwrap_or(0);
+    let max2 = scores
+        .iter()
+        .filter(|(_, s)| *s != max1)
+        .max_by_key(|(_, s)| *s)
+        .map(|(_, s)| *s)
+        .unwrap_or(0);
+
+    if max1 > 0 && max2 > max1 / 2 {
+        score_windows /= 2;
+        score_linux /= 2;
+        score_macos /= 2;
+        score_bsd /= 2;
+        score_network /= 2;
+    }
+
+    // Rebuild scores after dampening
+    scores = vec![
+        ("windows", score_windows),
+        ("linux", score_linux),
+        ("macos", score_macos),
+        ("bsd", score_bsd),
+        ("network_device", score_network),
+    ];
+
+    scores.sort_by(|a, b| b.1.cmp(&a.1));
+    let (best_os, best_score_i32) = scores[0];
+
+    if best_score_i32 <= 0 {
         return None;
     }
 
+    // Confidence shaping: simple clamp for now
+    let best_score = best_score_i32.min(100).max(10) as u8;
+
     // ------------------------------
-    // 5. Build evidence string
+    // 7. Build evidence string
     // ------------------------------
     let mut evidence = String::new();
     evidence.push_str(&format!("os_guess: {}\n", best_os));
@@ -173,12 +252,18 @@ pub fn infer_os(
     if !ssh_evidence.is_empty() {
         evidence.push_str(&ssh_evidence);
     }
+    if !smb_evidence.is_empty() {
+        evidence.push_str(&smb_evidence);
+    }
+    if !http_evidence.is_empty() {
+        evidence.push_str(&http_evidence);
+    }
 
     // ------------------------------
-    // 6. Build synthetic fingerprint
+    // 8. Build synthetic fingerprint
     // ------------------------------
     let mut fp = ServiceFingerprint::from_banner(ip, 0, "os", evidence);
-    fp.confidence = best_score.min(100) as u8;
+    fp.confidence = best_score;
 
     Some(fp)
 }

@@ -69,9 +69,9 @@ pub async fn udp_probe(
             match addr_str.to_socket_addrs() {
                 Ok(mut iter) => match iter.next() {
                     Some(sa) => sa,
-                    None => return (PortResult { port, protocol: "udp", state: "unknown", banner: None }, stats),
+                    None => return (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None}, stats),
                 },
-                Err(_) => return (PortResult { port, protocol: "udp", state: "unknown", banner: None }, stats),
+                Err(_) => return (PortResult { port, protocol: "udp", state: "unknown", banner: None, ttl: None, window_size :None, mss: None, df: None }, stats),
             }
         }
     };
@@ -116,9 +116,9 @@ pub async fn udp_probe(
                                 } else {
                                     Some(answers.join(", "))
                                 };
-                                return (PortResult { port, protocol: "udp", state: "open", banner }, stats);
+                                return (PortResult { port, protocol: "udp", state: "open", banner ,ttl: None, window_size :None, mss: None, df: None}, stats);
                             } else {
-                                return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes DNS (unparsed)", n)) }, stats);
+                                return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes DNS (unparsed)", n)),ttl: None, window_size :None, mss: None, df: None }, stats);
                             }
                         } else if port == 123 && n >= 48 {
                             let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as u64;
@@ -128,13 +128,13 @@ pub async fn udp_probe(
                             let banner = naive
                                 .map(|dt| format!("NTP time: {}", dt.format("%Y-%m-%d %H:%M:%S UTC")))
                                 .or(Some(format!("NTP response {} bytes", n)));
-                            return (PortResult { port, protocol: "udp", state: "open", banner }, stats);
+                            return (PortResult { port, protocol: "udp", state: "open", banner,ttl: None, window_size :None, mss: None, df: None }, stats);
                         } else {
-                            return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes response", n)) }, stats);
+                            return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes response", n)),ttl: None, window_size :None, mss: None, df: None }, stats);
                         }
                     }
                     Ok(Err(_)) => {
-                        return (PortResult { port, protocol: "udp", state: "unknown", banner: None }, stats);
+                        return (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None}, stats);
                     }
                     Err(_) => {
                         stats.timeouts += 1;
@@ -160,14 +160,14 @@ pub async fn udp_probe(
                             stats.packets_sent += 1;
                             continue;
                         } else {
-                            return (PortResult { port, protocol: "udp", state: "open|filtered", banner: None }, stats);
+                            return (PortResult { port, protocol: "udp", state: "open|filtered", banner: None ,ttl: None, window_size :None, mss: None, df: None}, stats);
                         }
                     }
                 }
             }
 
-            (PortResult { port, protocol: "udp", state: "unknown", banner: None }, stats)
+            (PortResult { port, protocol: "udp", state: "unknown", banner: None, ttl: None, window_size :None, mss: None, df: None}, stats)
         }
-        Err(_) => (PortResult { port, protocol: "udp", state: "unknown", banner: None }, stats),
+        Err(_) => (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None}, stats),
     }
 }
