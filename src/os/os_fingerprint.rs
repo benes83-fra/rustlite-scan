@@ -173,6 +173,72 @@ pub fn infer_os(
             }
         }
     }
+    // ------------------------------
+    // TCP/IP heuristics (read-only)
+    // ------------------------------
+    let mut tcp_evidence = String::new();
+
+    for p in ports {
+        // TTL
+        if let Some(ttl) = p.ttl {
+            tcp_evidence.push_str(&format!("ttl: {}\n", ttl));
+
+            if ttl >= 120 {
+                score_windows += 40;
+            } else if ttl >= 60 && ttl < 70 {
+                score_linux += 20;
+                score_macos += 20;
+            } else if ttl >= 250 {
+                score_network += 40;
+            }
+        }
+
+        // Window size
+        if let Some(ws) = p.window_size {
+            tcp_evidence.push_str(&format!("window: {}\n", ws));
+
+            if ws == 65535 {
+                score_macos += 20;
+                score_bsd += 20;
+            }
+
+            if ws == 8192 || ws == 64240 {
+                score_windows += 20;
+            }
+
+            if ws >= 29200 && ws <= 65535 {
+                score_linux += 10;
+            }
+        }
+
+        // MSS
+        if let Some(mss) = p.mss {
+            tcp_evidence.push_str(&format!("mss: {}\n", mss));
+
+            if mss == 1460 {
+                score_linux += 10;
+                score_macos += 10;
+                score_windows += 5;
+            }
+
+            if mss == 1440 {
+                score_windows += 20;
+            }
+
+            if mss <= 536 {
+                score_network += 30;
+            }
+        }
+
+        // DF flag
+        if let Some(df) = p.df {
+            tcp_evidence.push_str(&format!("df: {}\n", df));
+
+            if !df {
+                score_network += 20;
+            }
+        }
+    }
 
     // ------------------------------
     // 6. Synthesis layer
@@ -258,6 +324,10 @@ pub fn infer_os(
     if !http_evidence.is_empty() {
         evidence.push_str(&http_evidence);
     }
+    if !tcp_evidence.is_empty() {
+        evidence.push_str(&tcp_evidence);
+    }
+
 
     // ------------------------------
     // 8. Build synthetic fingerprint
