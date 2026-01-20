@@ -57,6 +57,14 @@ bash
 git clone https://github.com/benes83-fra/rustlite-scan.git
 cd rustlite-scan
 
+
+# External Dependencies needed for Building
+
+OpenSSL and NCAP are required to build this Project successfully.
+On Linux and macOS use a perferred package manager and set environment variable accordingly
+Windows is a bit more tricky but good info can be found on the web, at it is a persistent pain point.
+
+
 # Build with Cargo
 cargo build --release
 Quick usage

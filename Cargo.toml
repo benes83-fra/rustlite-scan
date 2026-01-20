@@ -34,6 +34,10 @@ serde_cbor = "0.11"
 # Progress bar
 indicatif = "0.17"
 
+#pcap dependencies
+pcap = { version = "1", optional = true }
+pnet_packet = "0.34"
+
 # Optional: colored output for friendlier CLI
 colored = "2.1"
 csv = "1.2"
@@ -54,7 +58,13 @@ hyper = { version = "0.14", features = ["full"] }
 rcgen = "0.9"
 rustls = "0.21"
 tokio-rustls = "0.23"
+
+
+
+
+
 [features]
 # test_helpers exposes small helpers used only by tests
 test_helpers = []
+syn_fingerprint = ["pcap"]
 

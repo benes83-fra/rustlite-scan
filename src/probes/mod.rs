@@ -33,6 +33,8 @@ pub mod mqtt;
 pub mod memcached;
 pub mod modbus;
 pub mod radius;
+pub mod tcps_syn;
+pub mod tcp_syn_helper;
 pub mod coap;
 pub mod nbns_helper;
 pub use tcp::tcp_probe;
@@ -89,6 +91,9 @@ pub fn default_probes() -> Vec<ProbeHandle> {
         Arc::new(crate::probes::modbus::ModbusProbe{}),
         Arc::new(crate::probes::radius::RadiusProbe{}),
         Arc::new(crate::probes::coap::CoapProbe{}),
+        #[cfg(feature = "syn_fingerprint")]
+        Arc::new(crate::probes::tcps_syn::TcpSynProbe {}),
+
       
        
         // add more probes here
