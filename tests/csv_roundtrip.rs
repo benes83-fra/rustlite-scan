@@ -12,7 +12,7 @@ fn csv_roundtrip_flexible() {
         host: "127.0.0.1".into(),
         ip: "127.0.0.1".into(),
         results: vec![
-            PortResult { port: 53, protocol: "udp", state: "open", banner: Some("ok".into()) }
+            PortResult { port: 53, protocol: "udp", state: "open", banner: Some("ok".into()),ttl: None, window_size :None, mss: None, df: None }
         ],
         udp_metrics: Some(UdpMetrics { attempts: 1, retries: 0, timeouts: 0, successes: 1, packets_sent: 1, packets_received: 1 }),
         host_limiter: None,

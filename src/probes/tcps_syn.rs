@@ -57,7 +57,18 @@ mod win {
     fn tcp_syn_fingerprint_blocking(ip: Ipv4Addr, port: u16) -> Option<ServiceFingerprint> {
         // pick first device for now; can be refined later
         let dev = Device::lookup().ok()??;
-        let mut cap: Capture<Active> = Capture::from_device(dev).ok()?.immediate_mode(true).open().ok()?;
+
+        for dev in Device::list().unwrap() {
+             println!("Device: {:?}", dev);
+        }
+
+        let real_dev = Device::list().unwrap()
+                .into_iter()
+                .find(|d| d.desc.as_deref().unwrap_or("").contains("Intel"))
+                .unwrap();
+
+
+        let mut cap: Capture<Active> = Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
         cap =cap.setnonblock().ok()?;
 
         // derive our local IPv4 address via a UDP "connect" trick
