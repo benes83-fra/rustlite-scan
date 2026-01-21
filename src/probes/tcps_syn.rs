@@ -160,6 +160,8 @@ use win::tcp_syn_fingerprint;
 
 // ---------- Unix/libpcap implementation ----------
 
+// ---------- Unix/libpcap implementation ----------
+
 #[cfg(all(
     feature = "syn_fingerprint",
     any(
@@ -174,7 +176,7 @@ mod unix {
     use super::tcp_syn_helper::{build_syn_packet, parse_tcp_meta_ipv4};
     use crate::service::ServiceFingerprint;
     use pcap::{Active, Capture, Device};
-    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, UdpSocket};
     use tokio::task;
 
     pub async fn tcp_syn_fingerprint(ip: &str, port: u16) -> Option<ServiceFingerprint> {
@@ -186,7 +188,8 @@ mod unix {
     }
 
     fn tcp_syn_fingerprint_blocking(ip: Ipv4Addr, port: u16) -> Option<ServiceFingerprint> {
-        // derive our local IPv4 address via a UDP "connect" trick
+        let _dev = Device::lookup().ok()??;
+
         let local_ip = {
             let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
             sock.connect(SocketAddrV4::new(ip, port)).ok()?;
@@ -196,23 +199,40 @@ mod unix {
             }
         };
 
-        // use the default capture device (libpcap will pick the primary interface)
-        let dev = Device::lookup().ok()??;
+        let real_dev = Device::list().ok()?
+            .into_iter()
+            .find(|d| {
+                d.addresses.iter().any(|a| {
+                    match a.addr {
+                        IpAddr::V4(ipv4) => ipv4 == local_ip,
+                        _ => false,
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                // Fallback: just use lookup() if matching by IP fails
+                Device::lookup().ok().flatten().expect("No pcap device available")
+            });
 
         let mut cap: Capture<Active> =
-            Capture::from_device(dev).ok()?.immediate_mode(true).open().ok()?;
+            Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
         cap = cap.setnonblock().ok()?;
+
+        let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+        sock.connect(SocketAddrV4::new(ip, port)).ok()?;
+        let local_ip = match sock.local_addr().ok()? {
+            std::net::SocketAddr::V4(sa) => *sa.ip(),
+            _ => return None,
+        };
 
         let src_port: u16 = 40000 + (port % 20000);
         let syn = build_syn_packet(local_ip, ip, src_port, port);
 
-        // BPF filter: only TCP from target IP/port to our IP/src_port
         let filter = format!(
             "tcp and src host {} and src port {} and dst host {} and dst port {}",
             ip, port, local_ip, src_port
         );
         cap.filter(&filter, true).ok()?;
-
         cap.sendpacket(syn).ok()?;
 
         let start = std::time::Instant::now();
@@ -250,8 +270,7 @@ mod unix {
     }
 }
 
-
-// ---------- cfg wiring ----------
+// ---------- selection ----------
 
 #[cfg(all(feature = "syn_fingerprint", target_os = "windows"))]
 use win::tcp_syn_fingerprint;
@@ -268,7 +287,14 @@ use win::tcp_syn_fingerprint;
 ))]
 use unix::tcp_syn_fingerprint;
 
-#[cfg(not(feature = "syn_fingerprint"))]
+#[cfg(any(not(feature = "syn_fingerprint"), not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))))]
 pub async fn tcp_syn_fingerprint(_ip: &str, _port: u16) -> Option<ServiceFingerprint> {
     None
 }
