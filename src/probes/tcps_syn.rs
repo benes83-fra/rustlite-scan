@@ -91,7 +91,7 @@ mod win {
 
 
         
-        let mut cap: Capture<Active> = Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
+        let mut cap: Capture<Active> = Capture::from_device(real_dev).ok()?.promisc(true).immediate_mode(true).open().ok()?;
         cap =cap.setnonblock().ok()?;
         let stats  = cap.stats().unwrap().clone();
         eprintln!("Captures stats {:?}",stats);
@@ -213,9 +213,9 @@ mod unix {
                 // Fallback: just use lookup() if matching by IP fails
                 Device::lookup().ok().flatten().expect("No pcap device available")
             });
-
+        eprintln! ("Device: {:?}", real_dev);
         let mut cap: Capture<Active> =
-            Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
+            Capture::from_device(real_dev).ok()?.promisc(true).immediate_mode(true).open().ok()?;
         cap = cap.setnonblock().ok()?;
 
         let stats  = cap.stats().unwrap().clone();
