@@ -218,6 +218,9 @@ mod unix {
             Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
         cap = cap.setnonblock().ok()?;
 
+        let stats  = cap.stats().unwrap().clone();
+        eprintln!("Captures stats {:?}",stats);
+
         let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
         sock.connect(SocketAddrV4::new(ip, port)).ok()?;
         let local_ip = match sock.local_addr().ok()? {
@@ -272,8 +275,7 @@ mod unix {
 
 // ---------- selection ----------
 
-#[cfg(all(feature = "syn_fingerprint", target_os = "windows"))]
-use win::tcp_syn_fingerprint;
+
 
 #[cfg(all(
     feature = "syn_fingerprint",
@@ -287,14 +289,8 @@ use win::tcp_syn_fingerprint;
 ))]
 use unix::tcp_syn_fingerprint;
 
-#[cfg(any(not(feature = "syn_fingerprint"), not(any(
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd"
-))))]
-pub async fn tcp_syn_fingerprint(_ip: &str, _port: u16) -> Option<ServiceFingerprint> {
-    None
+// Fallback stub 
+#[cfg(not(feature = "syn_fingerprint"))] 
+pub async fn tcp_syn_fingerprint(_ip: &str, _port: u16) -> Option<ServiceFingerprint> { 
+    None 
 }
