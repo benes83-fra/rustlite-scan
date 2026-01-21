@@ -45,6 +45,12 @@ mod win {
     use pcap::{Active, Capture, Device};
     use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
     use tokio::task;
+     use std::net::IpAddr;
+    use std::os::raw::c_ushort;
+   
+
+ 
+
 
     pub async fn tcp_syn_fingerprint(ip: &str, port: u16) -> Option<ServiceFingerprint> {
         let ip = ip.parse::<Ipv4Addr>().ok()?;
@@ -58,19 +64,37 @@ mod win {
         // pick first device for now; can be refined later
         let dev = Device::lookup().ok()??;
 
-        for dev in Device::list().unwrap() {
-             println!("Device: {:?}", dev);
-        }
+        
 
-        let real_dev = Device::list().unwrap()
-                .into_iter()
-                .find(|d| d.desc.as_deref().unwrap_or("").contains("Intel"))
-                .unwrap();
+       let local_ip = {
+            let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+            sock.connect(SocketAddrV4::new(ip, port)).ok()?;
+            match sock.local_addr().ok()? {
+                std::net::SocketAddr::V4(sa) => *sa.ip(),
+                _ => return None,
+            }
+        };
+
+        let real_dev = Device::list().ok()?
+            .into_iter()
+            .find(|d| {
+                d.addresses.iter().any(|a| {
+                    match a.addr {
+                        IpAddr::V4(ipv4) => ipv4 == local_ip,
+                        _ => false,
+                    }
+                })
+            })
+            .expect("No Npcap device matches the local routing IP");
 
 
+
+
+        
         let mut cap: Capture<Active> = Capture::from_device(real_dev).ok()?.immediate_mode(true).open().ok()?;
         cap =cap.setnonblock().ok()?;
-
+        let stats  = cap.stats().unwrap().clone();
+        eprintln!("Captures stats {:?}",stats);
         // derive our local IPv4 address via a UDP "connect" trick
         let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
         sock.connect(SocketAddrV4::new(ip, port)).ok()?;
@@ -92,9 +116,11 @@ mod win {
         cap.sendpacket(syn).ok()?;
 
         let start = std::time::Instant::now();
-        while start.elapsed().as_millis() < 500 {
+        while start.elapsed().as_millis() < 1500 {
             if let Ok(pkt) = cap.next_packet() {
+                 eprintln! ("Packet: {:?}", pkt);
                 if let Some(meta) = parse_tcp_meta_ipv4(pkt.data) {
+                    
                     // sanity check: match our 4‑tuple
                     if meta.src_ip != ip
                         || meta.dst_ip != local_ip
@@ -103,7 +129,7 @@ mod win {
                     {
                         continue;
                     }
-
+                    eprintln! ("Meta : {:?}", meta);
                     let mut ev = String::new();
                     ev.push_str(&format!("tcp_syn_ttl: {}\n", meta.ttl));
                     ev.push_str(&format!("tcp_syn_window: {}\n", meta.window));

@@ -4,6 +4,7 @@
     use pnet_packet::Packet;
     use std::net::Ipv4Addr;
 
+    #[derive(Debug)]
     pub struct TcpMeta {
         pub ttl: u8,
         pub window: u16,
