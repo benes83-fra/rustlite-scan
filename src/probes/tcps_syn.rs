@@ -181,7 +181,11 @@ mod unix {
     use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
     use pnet::packet::MutablePacket;
     use pnet::packet::Packet;
-
+    use pnet::packet::ipv4::MutableIpv4Packet;
+    use pnet::packet::ipv4::checksum as ipchecksum;
+    use pnet::packet::tcp::MutableTcpPacket;
+    use pnet::packet::tcp::TcpFlags;
+    use std::convert::TryInto;
 
     fn hex_line (buf : &[u8]) -> String {
         buf.iter().map(|b| format!("{:02x}",b)).collect::<Vec<_>>().join(" ")
