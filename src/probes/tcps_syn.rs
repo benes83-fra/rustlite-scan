@@ -160,8 +160,6 @@ use win::tcp_syn_fingerprint;
 
 // ---------- Unix/libpcap implementation ----------
 
-// ---------- Unix/libpcap implementation ----------
-
 #[cfg(all(
     feature = "syn_fingerprint",
     any(
@@ -184,6 +182,10 @@ mod unix {
     use pnet::packet::MutablePacket;
     use pnet::packet::Packet;
 
+
+    fn hex_line (buf : &[u8]) -> String {
+        buf.iter().map(|b| format!("{:02x}",b)).collect::<Vec<_>>().join(" ")
+    }
 
     pub fn resolve_mac(interface: &datalink::NetworkInterface, target_ip: Ipv4Addr) -> Option<[u8; 6]> {
         let source_mac = interface.mac?.octets();
@@ -306,16 +308,30 @@ mod unix {
             "tcp and src host {} and src port {} and dst host {} and dst port {}",
             ip, port, local_ip, src_port
         );
+        
+        
+
+
         cap.filter(&filter, true).ok()?;
         
     // Resolve MAC
+        //
+    
         let iface_name = device.name.clone();
-        let interfaces = datalink::interfaces();
+       let interfaces = datalink::interfaces();
         let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
+        eprintln! ("pnet interface name:{}",iface.name);
+        
+        if let Some(mac) = iface.mac{
+            eprintln! ("source MAC (iface):{}",mac);
+        }else{
+            eprintln! ("source MAC  missing on iface!");
+        }
 
         let target_mac = resolve_mac(&iface, ip)?;
         let source_mac = iface.mac?.octets();
-
+        eprintln! ("resolved target MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        target_mac[0], target_mac[1], target_mac[2], target_mac[3], target_mac[4], target_mac[5]);
         // Build Ethernet frame
         let mut frame = vec![0u8; 14 + syn.len()];
         {
@@ -326,9 +342,12 @@ mod unix {
 
             eth.payload_mut().copy_from_slice(&syn);
         }
-
+        eprintln!("Build Eithernet frame (len={}): {}", frame.len(), hex_line(&frame));
         // Send full Ethernet frame
-        cap.sendpacket(frame).ok()?;
+        match cap.sendpacket(&frame[..]){
+            Ok(()) => eprintln!("cap.sendpacket OK"),
+            Err(e) => eprintln!("cap.sendpacket ERROR: {:?}",e),
+        }
             let stat2 = cap.stats().unwrap().clone();
         eprintln! ("After sym packet sent {:?}", stat2);
         let start = std::time::Instant::now();
