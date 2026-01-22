@@ -178,6 +178,76 @@ mod unix {
     use pcap::{Active, Capture, Device};
     use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, UdpSocket};
     use tokio::task;
+    use pnet::datalink;
+    use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
+    use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
+    use pnet::packet::MutablePacket;
+    use pnet::packet::Packet;
+
+
+    pub fn resolve_mac(interface: &datalink::NetworkInterface, target_ip: Ipv4Addr) -> Option<[u8; 6]> {
+        let source_mac = interface.mac?.octets();
+        let source_ip = interface.ips.iter().find_map(|ip| {
+            if let std::net::IpAddr::V4(v4) = ip.ip() {
+                Some(v4)
+            } else {
+                None
+            }
+        })?;
+
+        let mut arp_buf = [0u8; 42];
+        {
+            let mut eth = MutableEthernetPacket::new(&mut arp_buf[..]).unwrap();
+            eth.set_destination([0xff; 6].into()); // broadcast
+            eth.set_source(source_mac.into());
+            eth.set_ethertype(EtherTypes::Arp);
+
+            let mut arp = MutableArpPacket::new(eth.payload_mut()).unwrap();
+            arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+            arp.set_protocol_type(EtherTypes::Ipv4);
+            arp.set_hw_addr_len(6);
+            arp.set_proto_addr_len(4);
+            arp.set_operation(ArpOperations::Request);
+            arp.set_sender_hw_addr(source_mac.into());
+            arp.set_sender_proto_addr(source_ip.octets().into());
+            arp.set_target_hw_addr([0u8; 6].into());
+            arp.set_target_proto_addr(target_ip.octets().into());
+        }
+
+        // Send ARP request
+      
+        let config = datalink::Config::default();
+        let channel = datalink::channel(interface, config).ok()?;
+
+        let (mut tx, mut rx) = match channel {
+            datalink::Channel::Ethernet(tx, rx) => (tx, rx),
+            _ => return None,
+        };
+         match tx.send_to(&arp_buf, None){
+            Some(Ok(())) => {},
+            _ => return None,
+         };
+
+        // Wait for ARP reply
+        let start = std::time::Instant::now();
+        while start.elapsed().as_millis() < 500 {
+            if let Ok(packet) = rx.next() {
+                if let Some(mut eth) = MutableEthernetPacket::new(packet.to_vec().as_mut_slice()) {
+                    if eth.get_ethertype() == EtherTypes::Arp {
+                        if let Some(arp) = ArpPacket::new(eth.payload_mut()) {
+                            if arp.get_operation() == ArpOperations::Reply &&
+                               arp.get_sender_proto_addr() == target_ip {
+                                return Some(arp.get_sender_hw_addr().octets());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
 
     pub async fn tcp_syn_fingerprint(ip: &str, port: u16) -> Option<ServiceFingerprint> {
         let ip = ip.parse::<Ipv4Addr>().ok()?;
@@ -213,10 +283,13 @@ mod unix {
                 // Fallback: just use lookup() if matching by IP fails
                 Device::lookup().ok().flatten().expect("No pcap device available")
             });
-        eprintln! ("Device: {:?}", real_dev);
+        let mut device = Device::lookup().unwrap().unwrap();
         let mut cap: Capture<Active> =
-            Capture::from_device(real_dev).ok()?.promisc(true).immediate_mode(true).open().ok()?;
-        cap = cap.setnonblock().ok()?;
+            Capture::from_device(device.clone()).ok()?
+            .immediate_mode(true)
+            .snaplen(5000)
+            .open().ok()?;
+       // cap = cap.setnonblock().ok()?;
 
         let stats  = cap.stats().unwrap().clone();
         eprintln!("Captures stats {:?}",stats);
@@ -227,20 +300,41 @@ mod unix {
             std::net::SocketAddr::V4(sa) => *sa.ip(),
             _ => return None,
         };
-
         let src_port: u16 = 40000 + (port % 20000);
         let syn = build_syn_packet(local_ip, ip, src_port, port);
-
         let filter = format!(
             "tcp and src host {} and src port {} and dst host {} and dst port {}",
             ip, port, local_ip, src_port
         );
         cap.filter(&filter, true).ok()?;
-        cap.sendpacket(syn).ok()?;
+        
+    // Resolve MAC
+        let iface_name = device.name.clone();
+        let interfaces = datalink::interfaces();
+        let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
 
+        let target_mac = resolve_mac(&iface, ip)?;
+        let source_mac = iface.mac?.octets();
+
+        // Build Ethernet frame
+        let mut frame = vec![0u8; 14 + syn.len()];
+        {
+            let mut eth = MutableEthernetPacket::new(&mut frame[..]).unwrap();
+            eth.set_destination(target_mac.into());
+            eth.set_source(source_mac.into());
+            eth.set_ethertype(EtherTypes::Ipv4);
+
+            eth.payload_mut().copy_from_slice(&syn);
+        }
+
+        // Send full Ethernet frame
+        cap.sendpacket(frame).ok()?;
+            let stat2 = cap.stats().unwrap().clone();
+        eprintln! ("After sym packet sent {:?}", stat2);
         let start = std::time::Instant::now();
-        while start.elapsed().as_millis() < 1500 {
+        while start.elapsed().as_millis() < 6000 {
             if let Ok(pkt) = cap.next_packet() {
+                eprintln! ("Packet: {:?}",pkt );
                 if let Some(meta) = parse_tcp_meta_ipv4(pkt.data) {
                     if meta.src_ip != ip
                         || meta.dst_ip != local_ip
@@ -267,6 +361,8 @@ mod unix {
                     fp.confidence = 40;
                     return Some(fp);
                 }
+            }else {
+                eprintln! ("Failed to receive pkt ({:?})",cap.next_packet());
             }
         }
         None
