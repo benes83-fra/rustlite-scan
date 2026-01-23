@@ -307,7 +307,7 @@ mod unix {
             _ => return None,
         };
         let src_port: u16 = 40000 + (port % 20000);
-        let syn = build_syn_packet(local_ip, ip, src_port, port);
+        let mut syn = build_syn_packet(local_ip, ip, src_port, port);
         let filter = format!(
             "tcp and src host {} and src port {} and dst host {} and dst port {}",
             ip, port, local_ip, src_port
@@ -319,10 +319,49 @@ mod unix {
         cap.filter(&filter, true).ok()?;
         
     // Resolve MAC
-        //
-    
+        let ihl = (syn[0] & 0x0f) as usize;
+        let ip_header_len = ihl * 4;
+        let tcp_offset = ip_header_len;
+        let ip_src: Ipv4Addr = local_ip;
+        let ip_dst: Ipv4Addr = ip;
+
+        // IPv4 checksum
+        {
+            use pnet::packet::ipv4::MutableIpv4Packet;
+            use pnet::packet::ipv4::checksum as ipv4_checksum;
+
+            let mut ip_pkt = MutableIpv4Packet::new(&mut syn[..ip_header_len])
+                .expect("ip header slice");
+            ip_pkt.set_checksum(0);
+            let csum = ipv4_checksum(&ip_pkt.to_immutable());
+            ip_pkt.set_checksum(csum);
+        }
+
+        // TCP checksum (pseudo-header)
+        {
+            use pnet::packet::tcp::MutableTcpPacket;
+            use pnet::packet::tcp::ipv4_checksum as tcp_ipv4_checksum;
+
+            let mut tcp_pkt = MutableTcpPacket::new(&mut syn[tcp_offset..])
+                .expect("tcp header slice");
+            tcp_pkt.set_checksum(0);
+            let tcp_csum = tcp_ipv4_checksum(&tcp_pkt.to_immutable(), &ip_src, &ip_dst);
+            tcp_pkt.set_checksum(tcp_csum);
+        }
+
+        // Optional debug prints: verify checksums before sending
+        {
+            use pnet::packet::ipv4::Ipv4Packet;
+            use pnet::packet::tcp::TcpPacket;
+
+            let ip_pkt = Ipv4Packet::new(&syn[..ip_header_len]).unwrap();
+            eprintln!("Computed IP checksum: 0x{:04x}", ip_pkt.get_checksum());
+            let tcp_pkt = TcpPacket::new(&syn[tcp_offset..]).unwrap();
+            eprintln!("Computed TCP checksum: 0x{:04x}", tcp_pkt.get_checksum());
+        }
+        
         let iface_name = device.name.clone();
-       let interfaces = datalink::interfaces();
+        let interfaces = datalink::interfaces();
         let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
         eprintln! ("pnet interface name:{}",iface.name);
         
@@ -358,7 +397,15 @@ mod unix {
         while start.elapsed().as_millis() < 6000 {
             if let Ok(pkt) = cap.next_packet() {
                 eprintln! ("Packet: {:?}",pkt );
-                if let Some(meta) = parse_tcp_meta_ipv4(pkt.data) {
+                let data = pkt.data;
+                
+                if data.len() < 14 {
+                    continue;
+                }
+                let ip_slice = &data[14..];
+
+
+                if let Some(meta) = parse_tcp_meta_ipv4(ip_slice) {
                     if meta.src_ip != ip
                         || meta.dst_ip != local_ip
                         || meta.src_port != port
@@ -366,7 +413,7 @@ mod unix {
                     {
                         continue;
                     }
-
+                    eprintln! ("Meta : {:?}", meta);
                     let mut ev = String::new();
                     ev.push_str(&format!("tcp_syn_ttl: {}\n", meta.ttl));
                     ev.push_str(&format!("tcp_syn_window: {}\n", meta.window));

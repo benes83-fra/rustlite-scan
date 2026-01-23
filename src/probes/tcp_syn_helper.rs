@@ -4,6 +4,7 @@
     use std::net::Ipv4Addr;
     use pnet_packet::Packet;
 
+
     
 
     #[derive(Debug)]
@@ -43,6 +44,7 @@
             let mut tcp = MutableTcpPacket::new(tcp_buf).unwrap();
             tcp.set_source(src_port);
             tcp.set_destination(dst_port);
+            tcp.set_data_offset(5);
             tcp.set_flags(TcpFlags::SYN);
             tcp.set_window(64240);
             // checksum left zero; acceptable for our purpose
@@ -50,7 +52,8 @@
         buf
     }
 
-   pub fn parse_tcp_meta_ipv4(packet: &[u8]) -> Option<TcpMeta> {
+ 
+pub fn parse_tcp_meta_ipv4(packet: &[u8]) -> Option<TcpMeta> {
     let ip = Ipv4Packet::new(packet)?;
     if ip.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
         return None;
@@ -63,21 +66,37 @@
     let src_ip = ip.get_source();
     let dst_ip = ip.get_destination();
 
-    let tcp = TcpPacket::new(ip.payload())?;
+    let ip_payload = ip.payload();
+    let tcp = TcpPacket::new(ip_payload)?;
+
     let window = tcp.get_window();
     let src_port = tcp.get_source();
     let dst_port = tcp.get_destination();
+
+    // -----------------------------
+    // TCP header length validation
+    // -----------------------------
+    let data_offset = tcp.get_data_offset() as usize * 4;
+
+    // must be at least 20 bytes
+    if data_offset < 20 {
+        return None;
+    }
+
+    // must not exceed payload length
+    if ip_payload.len() < data_offset {
+        return None;
+    }
 
     // -----------------------------
     // MSS parsing from TCP options
     // -----------------------------
     let mut mss: Option<u16> = None;
 
-    let data_offset = tcp.get_data_offset() as usize * 4;
     if data_offset > 20 {
-        let opts = &ip.payload()[20..data_offset];
-
+        let opts = &ip_payload[20..data_offset];
         let mut i = 0;
+
         while i < opts.len() {
             let kind = opts[i];
 
@@ -85,7 +104,7 @@
                 0 => break, // End of options list
                 1 => i += 1, // NOP
                 2 => {
-                    // MSS option
+                    // MSS option: kind=2, len=4, value=2 bytes
                     if i + 3 < opts.len() {
                         let mss_val = u16::from_be_bytes([opts[i + 2], opts[i + 3]]);
                         mss = Some(mss_val);
@@ -96,7 +115,7 @@
                     // Skip unknown option
                     if i + 1 < opts.len() {
                         let len = opts[i + 1] as usize;
-                        if len < 2 {
+                        if len < 2 || i + len > opts.len() {
                             break;
                         }
                         i += len;
@@ -119,3 +138,4 @@
         dst_port,
     })
 }
+
