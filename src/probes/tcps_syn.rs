@@ -16,9 +16,6 @@ use std::convert::TryInto;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
-
-
-
 use crate::probes::tcp_syn_helper;
 pub struct TcpSynProbe;
 
@@ -151,7 +148,7 @@ impl Probe for TcpSynProbe {
     }
 
 
-// ---------- Windows/Npcap implementation ----------
+
 
 #[cfg(all(feature = "syn_fingerprint"))]
 mod win {
@@ -235,10 +232,6 @@ mod win {
             "tcp and src host {} and src port {} and dst host {} and dst port {}",
             ip, port, local_ip, src_port
         );
-        
-        
-
-
         cap.filter(&filter, true).ok()?;
         
     // Resolve MAC
@@ -323,8 +316,6 @@ mod win {
                     fp.confidence = 40;
                     return Some(fp);
                 }
-            }else {
-                eprintln! ("Failed to receive pkt ({:?})",cap.next_packet());
             }
         }
         None
