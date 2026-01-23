@@ -36,7 +36,7 @@ indicatif = "0.17"
 
 #pcap dependencies
 pcap = { version = "1", optional = true }
-pnet_packet = "0.34"
+pnet_packet = "0.35"
 
 # Optional: colored output for friendlier CLI
 colored = "2.1"
