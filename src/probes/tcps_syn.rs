@@ -147,7 +147,18 @@ impl Probe for TcpSynProbe {
         }
     }
 
-
+   pub fn same_subnet(iface: &datalink::NetworkInterface, target: Ipv4Addr) -> bool {
+        iface.ips.iter().any(|ipn| {
+            if let std::net::IpAddr::V4(ip) = ipn.ip() {
+                if let std::net::IpAddr::V4(mask) = ipn.mask() {
+                    let ip_u32 = u32::from(ip);
+                    let mask_u32 = u32::from(mask);
+                    let tgt_u32 = u32::from(target);
+                    (ip_u32 & mask_u32) == (tgt_u32 & mask_u32)
+                } else { false }
+            } else { false }
+        })
+    }
 
 
 #[cfg(all(feature = "syn_fingerprint"))]
@@ -170,7 +181,7 @@ mod win {
     use pnet::packet::tcp::MutableTcpPacket;
     use pnet::packet::tcp::TcpFlags;
     use std::convert::TryInto;
-    use crate::probes::tcps_syn::{hex_line, resolve_mac,compute_checksums};
+    use crate::probes::tcps_syn::{hex_line, resolve_mac,compute_checksums,same_subnet};
 
     
  
@@ -251,6 +262,14 @@ mod win {
         let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
         eprintln! ("pnet interface name:{}",iface.name);
         
+        let is_lan = same_subnet(&iface, ip);
+
+        eprintln! ("Target IP: {}, is_LAN: {}", ip, is_lan);
+        if !is_lan {
+            return tcp_syn_fingerprint_wan( &mut cap, local_ip, ip, port);
+        }
+
+
         if let Some(mac) = iface.mac{
             eprintln! ("source MAC (iface):{}",mac);
         }else{
@@ -320,7 +339,72 @@ mod win {
         }
         None
     }
+
+
+    fn tcp_syn_fingerprint_wan(
+    cap: &mut Capture<Active>,
+    local_ip: Ipv4Addr,
+    target_ip: Ipv4Addr,
+    target_port: u16,
+) -> Option<ServiceFingerprint> {
+    // Only filter by IPs; ports we’ll check in userland.
+    let filter = format!(
+        "tcp and src host {} and dst host {}",
+        target_ip, local_ip
+    );
+    cap.filter(&filter, true).ok()?;
+    eprintln! ("We are WANNING");
+    // Kick off a normal TCP connect so the kernel sends a SYN.
+    use std::net::{TcpStream, SocketAddr, SocketAddrV4};
+    let addr = SocketAddr::V4(SocketAddrV4::new(target_ip, target_port));
+    let _ = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500));
+
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < 6000 {
+        if let Ok(pkt) = cap.next_packet() {
+            let data = pkt.data;
+            if data.len() < 14 {
+                continue;
+            }
+            let ip_slice = &data[14..];
+
+            if let Some(meta) = parse_tcp_meta_ipv4(ip_slice) {
+                // Now enforce ports in userland.
+                if meta.src_ip != target_ip || meta.dst_ip != local_ip {
+                    continue;
+                }
+                if meta.src_port != target_port {
+                    continue;
+                }
+
+                let mut ev = String::new();
+                ev.push_str(&format!("tcp_syn_ttl: {}\n", meta.ttl));
+                ev.push_str(&format!("tcp_syn_window: {}\n", meta.window));
+                if let Some(mss) = meta.mss {
+                    ev.push_str(&format!("tcp_syn_mss: {}\n", mss));
+                }
+                ev.push_str(&format!("tcp_syn_df: {}\n", meta.df));
+
+                let mut fp = ServiceFingerprint::from_banner(
+                    &target_ip.to_string(),
+                    target_port,
+                    "tcp_syn",
+                    ev,
+                );
+                fp.confidence = 40;
+                return Some(fp);
+            }
+        }
+    }
+    None
 }
+
+}
+
+
+
+
+
 
 #[cfg(all(feature = "syn_fingerprint"))]
 use win::tcp_syn_fingerprint;
