@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use crate::probes::{Probe, ProbeContext};
 use crate::service::ServiceFingerprint;
+use crate::types::PortResult;
 use std::net::IpAddr;
 use std::os::raw::c_ushort;
 use pnet::datalink;
@@ -141,9 +142,9 @@ impl Probe for TcpSynProbe {
            
 
             let ip_pkt = Ipv4Packet::new(&syn[..ip_header_len]).unwrap();
-            eprintln!("Computed IP checksum: 0x{:04x}", ip_pkt.get_checksum());
+           
             let tcp_pkt = TcpPacket::new(&syn[tcp_offset..]).unwrap();
-            eprintln!("Computed TCP checksum: 0x{:04x}", tcp_pkt.get_checksum());
+        
         }
     }
 
@@ -159,6 +160,8 @@ impl Probe for TcpSynProbe {
             } else { false }
         })
     }
+   
+
 
 
 #[cfg(all(feature = "syn_fingerprint"))]
@@ -260,26 +263,18 @@ mod win {
         let iface_name = device.name.clone();
         let interfaces = datalink::interfaces();
         let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
-        eprintln! ("pnet interface name:{}",iface.name);
+        
         
         let is_lan = same_subnet(&iface, ip);
 
-        eprintln! ("Target IP: {}, is_LAN: {}", ip, is_lan);
+       
         if !is_lan {
             return tcp_syn_fingerprint_wan( &mut cap, local_ip, ip, port);
         }
 
-
-        if let Some(mac) = iface.mac{
-            eprintln! ("source MAC (iface):{}",mac);
-        }else{
-            eprintln! ("source MAC  missing on iface!");
-        }
-
         let target_mac = resolve_mac(&iface, ip)?;
         let source_mac = iface.mac?.octets();
-        eprintln! ("resolved target MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        target_mac[0], target_mac[1], target_mac[2], target_mac[3], target_mac[4], target_mac[5]);
+       
         // Build Ethernet frame
         let mut frame = vec![0u8; 14 + syn.len()];
         {
@@ -290,7 +285,7 @@ mod win {
 
             eth.payload_mut().copy_from_slice(&syn);
         }
-        eprintln!("Build Eithernet frame (len={}): {}", frame.len(), hex_line(&frame));
+
         // Send full Ethernet frame
         match cap.sendpacket(&frame[..]){
             Ok(()) => eprintln!("cap.sendpacket OK"),
@@ -301,7 +296,7 @@ mod win {
         let start = std::time::Instant::now();
         while start.elapsed().as_millis() < 6000 {
             if let Ok(pkt) = cap.next_packet() {
-                eprintln! ("Packet: {:?}",pkt );
+                
                 let data = pkt.data;
                 
                 if data.len() < 14 {
@@ -353,7 +348,6 @@ mod win {
         target_ip, local_ip
     );
     cap.filter(&filter, true).ok()?;
-    eprintln! ("We are WANNING");
     // Kick off a normal TCP connect so the kernel sends a SYN.
     use std::net::{TcpStream, SocketAddr, SocketAddrV4};
     let addr = SocketAddr::V4(SocketAddrV4::new(target_ip, target_port));

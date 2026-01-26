@@ -6,6 +6,19 @@ pub struct OsGuess {
     pub confidence: u8,
     pub evidence: String,
 }
+use std::collections::BTreeSet;
+
+fn dedupe_lines(s: &str) -> String {
+    let mut set = BTreeSet::new();
+    for line in s.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            set.insert(trimmed.to_string());
+        }
+    }
+    set.into_iter().collect::<Vec<_>>().join("\n")
+}
+
 
 pub fn infer_os(
     ip: &str,
@@ -15,11 +28,18 @@ pub fn infer_os(
     // ------------------------------
     // 1. Collect open ports
     // ------------------------------
-    let open_ports: Vec<u16> = ports
+    let mut ports_mut = ports.to_vec();
+    apply_tcp_syn_to_ports(&mut ports_mut, service_fps);
+
+    let mut open_ports: Vec<u16> = ports
         .iter()
-        .filter(|r| r.state == "open" || r.state == "open|filtered")
+        .filter(|r| r.protocol == "tcp" && r.state == "open")
         .map(|r| r.port)
         .collect();
+
+    open_ports.sort_unstable();
+    open_ports.dedup();
+
 
     if open_ports.is_empty() {
         return None;
@@ -56,6 +76,13 @@ pub fn infer_os(
 
     if open_ports.contains(&631) {
         score_macos += 20;
+    }
+    if open_ports.contains(&445) == false
+        && open_ports.contains(&22) == false
+        && open_ports.contains(&631) == false
+        && ports.iter().any(|p| p.window_size == Some(29200))
+    {
+        score_network += 40;
     }
 
     // ------------------------------
@@ -183,13 +210,16 @@ pub fn infer_os(
         if let Some(ttl) = p.ttl {
             tcp_evidence.push_str(&format!("ttl: {}\n", ttl));
 
-            if ttl >= 120 {
-                score_windows += 40;
-            } else if ttl >= 60 && ttl < 70 {
-                score_linux += 20;
-                score_macos += 20;
-            } else if ttl >= 250 {
-                score_network += 40;
+            match ttl {
+                128..=255 => score_windows += 40, // Windows default TTL 128
+                64 => {
+                    score_linux += 20;
+                    score_bsd += 20;
+                    score_macos += 20;
+                    score_network += 10; // routers often TTL=64
+                }
+                255 => score_network += 40,
+                _ => {}
             }
         }
 
@@ -197,47 +227,36 @@ pub fn infer_os(
         if let Some(ws) = p.window_size {
             tcp_evidence.push_str(&format!("window: {}\n", ws));
 
-            if ws == 65535 {
-                score_macos += 20;
-                score_bsd += 20;
-            }
-
-            if ws == 8192 || ws == 64240 {
-                score_windows += 20;
-            }
-
-            if ws >= 29200 && ws <= 65535 {
-                score_linux += 10;
+            match ws {
+                65535 => { score_windows += 20; score_bsd += 20; }
+                29200 => { score_linux += 20; score_network += 10; } // FritzBox, Linux routers
+                8192 | 64240 => score_windows += 20,
+                _ => {}
             }
         }
 
+
         // MSS
-        if let Some(mss) = p.mss {
+         if let Some(mss) = p.mss {
             tcp_evidence.push_str(&format!("mss: {}\n", mss));
 
-            if mss == 1460 {
-                score_linux += 10;
-                score_macos += 10;
-                score_windows += 5;
-            }
-
-            if mss == 1440 {
-                score_windows += 20;
-            }
-
-            if mss <= 536 {
-                score_network += 30;
+            match mss {
+                1460 => { score_linux += 10; score_macos += 10; score_network += 10; }
+                1440 => score_windows += 20,
+                _ if mss <= 536 => score_network += 30,
+                _ => {}
             }
         }
 
         // DF flag
-        if let Some(df) = p.df {
+       if let Some(df) = p.df {
             tcp_evidence.push_str(&format!("df: {}\n", df));
 
             if !df {
-                score_network += 20;
+                score_network += 20; // routers often clear DF
             }
         }
+
     }
 
     // ------------------------------
@@ -314,7 +333,7 @@ pub fn infer_os(
     evidence.push_str(&format!("os_guess: {}\n", best_os));
     evidence.push_str(&format!("confidence: {}\n", best_score));
     evidence.push_str(&format!("open_ports: {:?}\n", open_ports));
-
+   
     if !ssh_evidence.is_empty() {
         evidence.push_str(&ssh_evidence);
     }
@@ -328,6 +347,8 @@ pub fn infer_os(
         evidence.push_str(&tcp_evidence);
     }
 
+    //let evidence = dedupe_lines(&evidence);
+
 
     // ------------------------------
     // 8. Build synthetic fingerprint
@@ -337,3 +358,30 @@ pub fn infer_os(
 
     Some(fp)
 }
+
+
+
+ pub fn apply_tcp_syn_to_ports(
+        ports: &mut [PortResult],
+        fps: &[ServiceFingerprint],
+    ) {
+        for fp in fps.iter().filter(|f| f.protocol == "tcp_syn") {
+            let port = fp.port;
+
+            if let Some(pr) = ports.iter_mut().find(|p| p.protocol == "tcp" && p.port == port) {
+                if let Some(ev) = &fp.evidence {
+                    for line in ev.lines() {
+                        if let Some(v) = line.strip_prefix("tcp_syn_ttl: ") {
+                            pr.ttl = v.trim().parse().ok();
+                        } else if let Some(v) = line.strip_prefix("tcp_syn_window: ") {
+                            pr.window_size = v.trim().parse().ok();
+                        } else if let Some(v) = line.strip_prefix("tcp_syn_mss: ") {
+                            pr.mss = v.trim().parse().ok();
+                        } else if let Some(v) = line.strip_prefix("tcp_syn_df: ") {
+                            pr.df = v.trim().parse().ok();
+                        }
+                    }
+                }
+            }
+        }
+    }
