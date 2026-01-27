@@ -208,6 +208,8 @@ pub fn infer_os(
     for p in ports {
         // TTL
         if let Some(ttl) = p.ttl {
+            let ttl = normalize_ttl(ttl);
+
             tcp_evidence.push_str(&format!("ttl: {}\n", ttl));
 
             match ttl {
@@ -432,5 +434,14 @@ pub fn apply_tcp_syn_to_ports(
                 }
             }
         }
+    }
+}
+
+
+fn normalize_ttl(observed: u8) -> u8 {
+    match observed {
+        0..=64 => 64,
+        65..=128 => 128,
+        _ => 255,
     }
 }
