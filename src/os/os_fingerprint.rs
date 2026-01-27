@@ -256,6 +256,47 @@ pub fn infer_os(
                 score_network += 20; // routers often clear DF
             }
         }
+        // ------------------------------
+
+        if let Some(ts) = p.ts {
+            tcp_evidence.push_str(&format!("ts: {}\n", ts));
+            if ts {
+                score_linux += 15;
+                score_macos += 10;
+                score_windows += 10;
+            } else {
+                score_network += 10; // routers often omit TS
+            }
+        }
+
+        if let Some(ws) = p.ws {
+            tcp_evidence.push_str(&format!("ws: {}\n", ws));
+            match ws {
+                7 => score_linux += 20,   // Linux default
+                3 => score_macos += 20,   // macOS default
+                8 => score_windows += 20, // Windows default
+                _ => score_network += 5,
+            }
+        }
+
+        if let Some(sack) = p.sackok {
+            tcp_evidence.push_str(&format!("sackok: {}\n", sack));
+            if sack {
+                score_linux += 10;
+                score_macos += 10;
+                score_windows += 10;
+            } else {
+                score_network += 10;
+            }
+        }
+
+        if let Some(ecn) = p.ecn {
+            tcp_evidence.push_str(&format!("ecn: {}\n", ecn));
+            if ecn {
+                score_linux += 10; // Linux enables ECN more often
+            }
+        }
+
 
     }
 
@@ -361,27 +402,35 @@ pub fn infer_os(
 
 
 
- pub fn apply_tcp_syn_to_ports(
-        ports: &mut [PortResult],
-        fps: &[ServiceFingerprint],
-    ) {
-        for fp in fps.iter().filter(|f| f.protocol == "tcp_syn") {
-            let port = fp.port;
+pub fn apply_tcp_syn_to_ports(
+    ports: &mut [PortResult],
+    fps: &[ServiceFingerprint],
+) {
+    for fp in fps.iter().filter(|f| f.protocol == "tcp_syn") {
+        let port = fp.port;
 
-            if let Some(pr) = ports.iter_mut().find(|p| p.protocol == "tcp" && p.port == port) {
-                if let Some(ev) = &fp.evidence {
-                    for line in ev.lines() {
-                        if let Some(v) = line.strip_prefix("tcp_syn_ttl: ") {
-                            pr.ttl = v.trim().parse().ok();
-                        } else if let Some(v) = line.strip_prefix("tcp_syn_window: ") {
-                            pr.window_size = v.trim().parse().ok();
-                        } else if let Some(v) = line.strip_prefix("tcp_syn_mss: ") {
-                            pr.mss = v.trim().parse().ok();
-                        } else if let Some(v) = line.strip_prefix("tcp_syn_df: ") {
-                            pr.df = v.trim().parse().ok();
-                        }
+        if let Some(pr) = ports.iter_mut().find(|p| p.protocol == "tcp" && p.port == port) {
+            if let Some(ev) = &fp.evidence {
+                for line in ev.lines() {
+                    if let Some(v) = line.strip_prefix("tcp_syn_ttl: ") {
+                        pr.ttl = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_window: ") {
+                        pr.window_size = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_mss: ") {
+                        pr.mss = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_df: ") {
+                        pr.df = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_ts: ") {
+                        pr.ts = Some(v.trim() == "true");
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_ws: ") {
+                        pr.ws = v.trim().parse().ok();
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_sackok: ") {
+                        pr.sackok = Some(v.trim() == "true");
+                    } else if let Some(v) = line.strip_prefix("tcp_syn_ecn: ") {
+                        pr.ecn = Some(v.trim() == "true");
                     }
                 }
             }
         }
     }
+}

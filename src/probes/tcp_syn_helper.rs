@@ -11,14 +11,21 @@
     #[derive(Debug)]
     pub struct TcpMeta {
         pub ttl: u8,
-        pub window: u16,
+        pub window: u32,
         pub mss: Option<u16>,
         pub df: bool,
+
+        pub ts: bool,
+        pub ws: Option<u8>,
+        pub sackok: bool,
+        pub ecn: bool,
+
         pub src_ip: Ipv4Addr,
         pub dst_ip: Ipv4Addr,
         pub src_port: u16,
         pub dst_port: u16,
     }
+
 
     
 
@@ -54,75 +61,96 @@
     }
 
  
-pub fn parse_tcp_meta_ipv4(packet: &[u8]) -> Option<TcpMeta> {
-    let ip = Ipv4Packet::new(packet)?;
-    if ip.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
+pub fn parse_tcp_meta_ipv4(ip_slice: &[u8]) -> Option<TcpMeta> {
+    use pnet::packet::ipv4::Ipv4Packet;
+    use pnet::packet::tcp::TcpPacket;
+
+    let ip = Ipv4Packet::new(ip_slice)?;
+    if ip.get_version() != 4 {
         return None;
     }
 
     let ttl = ip.get_ttl();
-    let flags = ip.get_flags();
-    let df = (flags & 0x2) != 0;
+    let df = ip.get_flags() & 0x2 != 0; // DF bit
 
     let src_ip = ip.get_source();
     let dst_ip = ip.get_destination();
 
-    let ip_payload = ip.payload();
-    let tcp = TcpPacket::new(ip_payload)?;
+    let ip_header_len = (ip.get_header_length() * 4) as usize;
+    if ip_slice.len() < ip_header_len {
+        return None;
+    }
 
-    let window = tcp.get_window();
+    let tcp_slice = &ip_slice[ip_header_len..];
+    let tcp = TcpPacket::new(tcp_slice)?;
+
     let src_port = tcp.get_source();
     let dst_port = tcp.get_destination();
+    let window = tcp.get_window() as u32;
 
     // -----------------------------
-    // TCP header length validation
+    // TCP flags → ECN detection
+    // -----------------------------
+    let flags = tcp.get_flags();
+    let ecn = (flags & 0x40 != 0) || (flags & 0x80 != 0); // ECE or CWR
+
+    // -----------------------------
+    // Parse TCP options
     // -----------------------------
     let data_offset = tcp.get_data_offset() as usize * 4;
-
-    // must be at least 20 bytes
-    if data_offset < 20 {
+    if data_offset < 20 || data_offset > tcp_slice.len() {
         return None;
     }
 
-    // must not exceed payload length
-    if ip_payload.len() < data_offset {
-        return None;
-    }
+    let opts = &tcp_slice[20..data_offset];
 
-    // -----------------------------
-    // MSS parsing from TCP options
-    // -----------------------------
-    let mut mss: Option<u16> = None;
+    let mut mss = None;
+    let mut ws = None;
+    let mut sackok = false;
+    let mut ts = false;
 
-    if data_offset > 20 {
-        let opts = &ip_payload[20..data_offset];
-        let mut i = 0;
+    let mut i = 0;
+    while i < opts.len() {
+        let kind = opts[i];
 
-        while i < opts.len() {
-            let kind = opts[i];
+        match kind {
+            0 => break, // End of options
+            1 => { i += 1; continue; } // NOP
 
-            match kind {
-                0 => break, // End of options list
-                1 => i += 1, // NOP
-                2 => {
-                    // MSS option: kind=2, len=4, value=2 bytes
-                    if i + 3 < opts.len() {
-                        let mss_val = u16::from_be_bytes([opts[i + 2], opts[i + 3]]);
-                        mss = Some(mss_val);
-                    }
-                    break;
+            2 => { // MSS
+                if i + 4 <= opts.len() {
+                    mss = Some(u16::from_be_bytes([opts[i+2], opts[i+3]]));
                 }
-                _ => {
-                    // Skip unknown option
-                    if i + 1 < opts.len() {
-                        let len = opts[i + 1] as usize;
-                        if len < 2 || i + len > opts.len() {
-                            break;
-                        }
-                        i += len;
-                    } else {
-                        break;
-                    }
+                i += 4;
+            }
+
+            3 => { // Window Scale
+                if i + 3 <= opts.len() {
+                    ws = Some(opts[i+2]);
+                }
+                i += 3;
+            }
+
+            4 => { // SACK Permitted
+                sackok = true;
+                i += 2;
+            }
+
+            8 => { // Timestamps
+                if i + 10 <= opts.len() {
+                    ts = true;
+                }
+                i += 10;
+            }
+
+            _ => {
+                // Unknown option → skip length
+                if i + 2 <= opts.len() {
+                    let len = opts[i+1] as usize;
+                    if len < 2 { break; }
+                    i += len;
+                } else {
+                    break;
                 }
             }
         }
@@ -133,12 +161,17 @@ pub fn parse_tcp_meta_ipv4(packet: &[u8]) -> Option<TcpMeta> {
         window,
         mss,
         df,
+        ts,
+        ws,
+        sackok,
+        ecn,
         src_ip,
         dst_ip,
         src_port,
         dst_port,
     })
 }
+
 
 
 

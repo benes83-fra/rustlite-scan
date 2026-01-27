@@ -320,6 +320,11 @@ mod win {
                         ev.push_str(&format!("tcp_syn_mss: {}\n", mss));
                     }
                     ev.push_str(&format!("tcp_syn_df: {}\n", meta.df));
+                    ev.push_str(&format!("tcp_syn_ts: {}\n", meta.ts));
+                    ev.push_str(&format!("tcp_syn_ws: {}\n", meta.ws.unwrap_or(0)));
+                    ev.push_str(&format!("tcp_syn_sackok: {}\n", meta.sackok));
+                    ev.push_str(&format!("tcp_syn_ecn: {}\n", meta.ecn));
+
 
                     let mut fp = ServiceFingerprint::from_banner(
                         &ip.to_string(),
