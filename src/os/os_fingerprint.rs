@@ -20,6 +20,53 @@ fn dedupe_lines(s: &str) -> String {
 }
 
 
+#[derive(Debug, Clone)]
+pub struct SynAckFp {
+    pub ttl: Option<u8>,
+    pub window: Option<u32>,
+    pub mss: Option<u16>,
+    pub df: Option<bool>,
+
+    pub ts: Option<bool>,
+    pub ws: Option<u8>,
+    pub sackok: Option<bool>,
+    pub ecn: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RstFp {
+    pub ttl: Option<u8>,
+    pub window: Option<u32>,
+    pub df: Option<bool>,
+}
+
+impl SynAckFp {
+    pub fn from_port(p: &PortResult) -> Self {
+        SynAckFp {
+            ttl: p.ttl,
+            window: p.window_size,
+            mss: p.mss,
+            df: p.df,
+            ts: p.ts,
+            ws: p.ws,
+            sackok: p.sackok,
+            ecn: p.ecn,
+        }
+    }
+}
+
+impl RstFp {
+    pub fn from_port(p: &PortResult) -> Self {
+        RstFp {
+            ttl: p.ttl,
+            window: p.window_size,
+            df: p.df,
+        }
+    }
+}
+
+
+
 pub fn infer_os(
     ip: &str,
     ports: &[PortResult],
@@ -30,6 +77,20 @@ pub fn infer_os(
     // ------------------------------
     let mut ports_mut = ports.to_vec();
     apply_tcp_syn_to_ports(&mut ports_mut, service_fps);
+
+
+    // Extract SYN/ACK fingerprint (from any open TCP port)
+    let syn_fp = ports_mut
+        .iter()
+        .find(|p| p.protocol == "tcp" && p.state == "open")
+        .map(SynAckFp::from_port);
+
+    // Extract RST fingerprint (from any closed TCP port)
+    let rst_fp = ports_mut
+        .iter()
+        .find(|p| p.protocol == "tcp" && p.state == "closed")
+        .map(RstFp::from_port);
+
 
     let mut open_ports: Vec<u16> = ports
         .iter()
