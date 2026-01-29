@@ -1,11 +1,7 @@
 use crate::service::ServiceFingerprint;
 use crate::types::PortResult;
 
-pub struct OsGuess {
-    pub os: &'static str,
-    pub confidence: u8,
-    pub evidence: String,
-}
+
 use std::collections::BTreeSet;
 
 fn dedupe_lines(s: &str) -> String {
@@ -64,6 +60,31 @@ impl RstFp {
         }
     }
 }
+#[derive(Debug, Clone)]
+struct OsSynFp {
+    ttl: u8,
+    window: u32,
+    mss: Option<u16>,
+    df: bool,
+    ts: Option<bool>,
+    ws: Option<u8>,
+    sackok: Option<bool>,
+    ecn: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct OsRstFp {
+    ttl: u8,
+    window: u32,
+    df: bool,
+}
+
+#[derive(Debug, Clone)]
+struct OsFingerprint {
+    name: &'static str,
+    syn: OsSynFp,
+    rst: OsRstFp,
+}
 
 
 
@@ -90,6 +111,27 @@ pub fn infer_os(
         .iter()
         .find(|p| p.protocol == "tcp" && p.state == "closed")
         .map(RstFp::from_port);
+    // ------------------------------
+    // SYN/ACK + RST fingerprint scoring
+    // ------------------------------
+    let mut synrst_best_os = None;
+    let mut synrst_best_score = 0;
+
+    if let Some(ref syn) = syn_fp {
+        for os in os_fingerprint_table() {
+            let mut score = score_syn(syn, &os.syn);
+
+            if let Some(ref rst) = rst_fp {
+                score += score_rst(rst, &os.rst);
+            }
+
+            if score > synrst_best_score {
+                synrst_best_score = score;
+                synrst_best_os = Some(os.name);
+            }
+        }
+    }
+    
 
 
     let mut open_ports: Vec<u16> = ports
@@ -288,6 +330,7 @@ pub fn infer_os(
 
         // Window size
         if let Some(ws) = p.window_size {
+            let ws  = normalize_window(ws);
             tcp_evidence.push_str(&format!("window: {}\n", ws));
 
             match ws {
@@ -301,6 +344,7 @@ pub fn infer_os(
 
         // MSS
          if let Some(mss) = p.mss {
+            let mss = normalize_mss(mss);
             tcp_evidence.push_str(&format!("mss: {}\n", mss));
 
             match mss {
@@ -359,7 +403,7 @@ pub fn infer_os(
                 score_linux += 10; // Linux enables ECN more often
             }
         }
-
+ 
 
     }
 
@@ -430,6 +474,18 @@ pub fn infer_os(
     // Confidence shaping: simple clamp for now
     let best_score = best_score_i32.min(100).max(10) as u8;
 
+    let final_os;
+    let final_confidence;
+
+    if synrst_best_score >= 40 {
+        // strong TCP/IP match → override heuristics
+        final_os = synrst_best_os.unwrap();
+        final_confidence = synrst_best_score.min(100) as u8;
+    } else {
+        // fallback to heuristics
+        final_os = best_os;
+        final_confidence = best_score;
+    }
     // ------------------------------
     // 7. Build evidence string
     // ------------------------------
@@ -450,6 +506,11 @@ pub fn infer_os(
     if !tcp_evidence.is_empty() {
         evidence.push_str(&tcp_evidence);
     }
+    if let Some(os) = synrst_best_os {
+        evidence.push_str(&format!("syn_fp_os: {}\n", os));
+        evidence.push_str(&format!("syn_fp_score: {}\n", synrst_best_score));
+    }
+
 
     //let evidence = dedupe_lines(&evidence);
 
@@ -505,4 +566,216 @@ fn normalize_ttl(observed: u8) -> u8 {
         65..=128 => 128,
         _ => 255,
     }
+}
+
+fn normalize_window(w: u32) -> u32 {
+    match w {
+        28000..=31000 => 29200,
+        64000..=66000 => 65535,
+        8192 => 8192,
+        _ => w,
+    }
+}
+
+
+fn normalize_mss(m: u16) -> u16 {
+    match m {
+        1440..=1460 => 1460,
+        _ => m,
+    }
+}
+
+
+fn score_syn(obs: &SynAckFp, fp: &OsSynFp) -> i32 {
+    let mut s = 0;
+
+    // TTL
+    if let Some(ttl) = obs.ttl {
+        if normalize_ttl(ttl) == fp.ttl {
+            s += 20;
+        }
+    }
+
+    // Window
+    if let Some(w) = obs.window {
+        if normalize_window(w) == fp.window {
+            s += 30;
+        }
+    }
+
+    // MSS
+    if obs.mss == fp.mss {
+        s += 10;
+    }
+
+    // DF
+    if obs.df == Some(fp.df) {
+        s += 5;
+    }
+
+    // TS
+    if obs.ts == fp.ts {
+        s += 15;
+    }
+
+    // WS
+    if obs.ws == fp.ws {
+        s += 15;
+    }
+
+    // SACKOK
+    if obs.sackok == fp.sackok {
+        s += 10;
+    }
+
+    // ECN
+    if obs.ecn == fp.ecn {
+        s += 5;
+    }
+
+    s
+}
+
+
+fn score_rst(obs: &RstFp, fp: &OsRstFp) -> i32 {
+    let mut s = 0;
+
+    // TTL
+    if let Some(ttl) = obs.ttl {
+        if normalize_ttl(ttl) == fp.ttl {
+            s += 10;
+        }
+    }
+
+    // Window
+    if let Some(w) = obs.window {
+        if normalize_window(w) == fp.window {
+            s += 20;
+        }
+    }
+
+    // DF
+    if obs.df == Some(fp.df) {
+        s += 5;
+    }
+
+    s
+}
+
+
+
+fn os_fingerprint_table() -> Vec<OsFingerprint> {
+    vec![
+
+        // -------------------------
+        // Linux (generic servers)
+        // -------------------------
+        OsFingerprint {
+            name: "linux",
+            syn: OsSynFp {
+                ttl: 64,
+                window: 29200,
+                mss: Some(1460),
+                df: true,
+                ts: Some(true),
+                ws: Some(7),
+                sackok: Some(true),
+                ecn: Some(true),
+            },
+            rst: OsRstFp {
+                ttl: 64,
+                window: 0,
+                df: true,
+            },
+        },
+
+        // -------------------------
+        // Windows 10/11
+        // -------------------------
+        OsFingerprint {
+            name: "windows",
+            syn: OsSynFp {
+                ttl: 128,
+                window: 64240, // common Windows window
+                mss: Some(1460),
+                df: true,
+                ts: Some(true),
+                ws: Some(8),
+                sackok: Some(true),
+                ecn: Some(false),
+            },
+            rst: OsRstFp {
+                ttl: 128,
+                window: 8192, // Windows RST window
+                df: true,
+            },
+        },
+
+        // -------------------------
+        // macOS
+        // -------------------------
+        OsFingerprint {
+            name: "macos",
+            syn: OsSynFp {
+                ttl: 64,
+                window: 65535,
+                mss: Some(1460),
+                df: true,
+                ts: Some(true),
+                ws: Some(3),
+                sackok: Some(true),
+                ecn: Some(false),
+            },
+            rst: OsRstFp {
+                ttl: 64,
+                window: 65535,
+                df: true,
+            },
+        },
+
+        // -------------------------
+        // BSD (FreeBSD/OpenBSD/NetBSD)
+        // -------------------------
+        OsFingerprint {
+            name: "bsd",
+            syn: OsSynFp {
+                ttl: 64,
+                window: 65535,
+                mss: Some(1460),
+                df: true,
+                ts: Some(true),
+                ws: Some(6),
+                sackok: Some(true),
+                ecn: Some(false),
+            },
+            rst: OsRstFp {
+                ttl: 64,
+                window: 65535,
+                df: true,
+            },
+        },
+
+        // -------------------------
+        // Embedded Linux / Routers
+        // FritzBox, OpenWRT, ISP boxes
+        // -------------------------
+        OsFingerprint {
+            name: "embedded_linux",
+            syn: OsSynFp {
+                ttl: 64,
+                window: 29200,
+                mss: Some(1460),
+                df: true,
+                ts: Some(false),
+                ws: None,
+                sackok: Some(false),
+                ecn: Some(false),
+            },
+            rst: OsRstFp {
+                ttl: 64,
+                window: 0,
+                df: true,
+            },
+        },
+    ]
 }
