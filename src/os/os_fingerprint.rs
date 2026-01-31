@@ -486,13 +486,26 @@ pub fn infer_os(
         final_os = best_os;
         final_confidence = best_score;
     }
+    let (final_os, final_confidence) = if synrst_best_score >= 20 {
+        (synrst_best_os.unwrap_or(best_os), synrst_best_score.min(100) as u8)
+    } else {
+        (best_os, best_score)
+    };
+
     // ------------------------------
     // 7. Build evidence string
     // ------------------------------
     let mut evidence = String::new();
-    evidence.push_str(&format!("os_guess: {}\n", best_os));
-    evidence.push_str(&format!("confidence: {}\n", best_score));
+    evidence.push_str(&format!("os_guess: {}\n", final_os));
+    evidence.push_str(&format!("confidence: {}\n", final_confidence));
     evidence.push_str(&format!("open_ports: {:?}\n", open_ports));
+
+
+    if let Some(os) = synrst_best_os {
+        evidence.push_str(&format!("syn_fp_os: {}\n", os));
+        evidence.push_str(&format!("syn_fp_score: {}\n", synrst_best_score));
+    }
+
    
     if !ssh_evidence.is_empty() {
         evidence.push_str(&ssh_evidence);
@@ -547,12 +560,19 @@ pub fn apply_tcp_syn_to_ports(
                     } else if let Some(v) = line.strip_prefix("tcp_syn_ts: ") {
                         pr.ts = Some(v.trim() == "true");
                     } else if let Some(v) = line.strip_prefix("tcp_syn_ws: ") {
-                        pr.ws = v.trim().parse().ok();
+                        let ws_val: u8 = v.trim().parse().unwrap_or(0);
+                        // Treat 0 as "no WS option"
+                        if ws_val == 0 {
+                            pr.ws = None;
+                        } else {
+                            pr.ws = Some(ws_val);
+                        }
                     } else if let Some(v) = line.strip_prefix("tcp_syn_sackok: ") {
                         pr.sackok = Some(v.trim() == "true");
                     } else if let Some(v) = line.strip_prefix("tcp_syn_ecn: ") {
                         pr.ecn = Some(v.trim() == "true");
                     }
+                    
                 }
             }
         }

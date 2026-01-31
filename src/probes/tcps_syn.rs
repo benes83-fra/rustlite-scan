@@ -292,7 +292,6 @@ mod win {
             Err(e) => eprintln!("cap.sendpacket ERROR: {:?}",e),
         }
             let stat2 = cap.stats().unwrap().clone();
-        eprintln! ("After sym packet sent {:?}", stat2);
         let start = std::time::Instant::now();
         while start.elapsed().as_millis() < 6000 {
             if let Ok(pkt) = cap.next_packet() {
