@@ -134,7 +134,7 @@ pub fn infer_os(
     
 
 
-    let mut open_ports: Vec<u16> = ports
+    let mut open_ports: Vec<u16> = ports_mut
         .iter()
         .filter(|r| r.protocol == "tcp" && r.state == "open")
         .map(|r| r.port)
@@ -308,7 +308,7 @@ pub fn infer_os(
     // ------------------------------
     let mut tcp_evidence = String::new();
 
-    for p in ports {
+    for p in ports_mut {
         // TTL
         if let Some(ttl) = p.ttl {
             let ttl = normalize_ttl(ttl);
@@ -486,9 +486,11 @@ pub fn infer_os(
         final_os = best_os;
         final_confidence = best_score;
     }
-    let (final_os, final_confidence) = if synrst_best_score >= 20 {
-        (synrst_best_os.unwrap_or(best_os), synrst_best_score.min(100) as u8)
+    let (mut final_os, mut final_confidence) = if synrst_best_score >= 30 {
+    // SYN/ACK match strong enough → trust it
+        (synrst_best_os.unwrap(), synrst_best_score.min(100) as u8)
     } else {
+    // fallback to heuristic engine
         (best_os, best_score)
     };
 
@@ -741,9 +743,9 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 window: 65535,
                 mss: Some(1460),
                 df: true,
-                ts: Some(true),
-                ws: Some(3),
-                sackok: Some(true),
+                ts: Some(false),
+                ws: None,
+                sackok: Some(false),
                 ecn: Some(false),
             },
             rst: OsRstFp {
