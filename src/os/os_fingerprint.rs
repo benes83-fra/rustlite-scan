@@ -309,6 +309,9 @@ pub fn infer_os(
     let mut tcp_evidence = String::new();
 
     for p in ports_mut {
+        if p.state != "open" && p.state !="closed"{
+            continue;
+        }
         // TTL
         if let Some(ttl) = p.ttl {
             let ttl = normalize_ttl(ttl);
@@ -472,27 +475,24 @@ pub fn infer_os(
     }
 
     // Confidence shaping: simple clamp for now
+       // Confidence shaping: simple clamp for now
     let best_score = best_score_i32.min(100).max(10) as u8;
 
-    let final_os;
-    let final_confidence;
+    // ------------------------------
+    // 6b. Final OS decision
+    // ------------------------------
+    let mut final_os = best_os;
+    let mut final_confidence = best_score;
 
-    if synrst_best_score >= 40 {
-        // strong TCP/IP match → override heuristics
-        final_os = synrst_best_os.unwrap();
-        final_confidence = synrst_best_score.min(100) as u8;
-    } else {
-        // fallback to heuristics
-        final_os = best_os;
-        final_confidence = best_score;
+    // If SYN/ACK+RST fingerprint is strong enough, trust it over heuristics.
+    // This is what will cleanly separate your router (embedded_linux)
+    // from macOS, without giving insane 100% confidence on weak matches.
+    if synrst_best_score >= 60 {
+        if let Some(os_name) = synrst_best_os {
+            final_os = os_name;
+            final_confidence = synrst_best_score.min(100) as u8;
+        }
     }
-    let (mut final_os, mut final_confidence) = if synrst_best_score >= 30 {
-    // SYN/ACK match strong enough → trust it
-        (synrst_best_os.unwrap(), synrst_best_score.min(100) as u8)
-    } else {
-    // fallback to heuristic engine
-        (best_os, best_score)
-    };
 
     // ------------------------------
     // 7. Build evidence string
@@ -502,13 +502,11 @@ pub fn infer_os(
     evidence.push_str(&format!("confidence: {}\n", final_confidence));
     evidence.push_str(&format!("open_ports: {:?}\n", open_ports));
 
-
     if let Some(os) = synrst_best_os {
         evidence.push_str(&format!("syn_fp_os: {}\n", os));
         evidence.push_str(&format!("syn_fp_score: {}\n", synrst_best_score));
     }
 
-   
     if !ssh_evidence.is_empty() {
         evidence.push_str(&ssh_evidence);
     }
@@ -526,17 +524,14 @@ pub fn infer_os(
         evidence.push_str(&format!("syn_fp_score: {}\n", synrst_best_score));
     }
 
-
-    //let evidence = dedupe_lines(&evidence);
-
-
     // ------------------------------
     // 8. Build synthetic fingerprint
     // ------------------------------
     let mut fp = ServiceFingerprint::from_banner(ip, 0, "os", evidence);
-    fp.confidence = best_score;
+    fp.confidence = final_confidence;
 
     Some(fp)
+
 }
 
 
@@ -688,7 +683,6 @@ fn score_rst(obs: &RstFp, fp: &OsRstFp) -> i32 {
 
 fn os_fingerprint_table() -> Vec<OsFingerprint> {
     vec![
-
         // -------------------------
         // Linux (generic servers)
         // -------------------------
@@ -718,7 +712,7 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
             name: "windows",
             syn: OsSynFp {
                 ttl: 128,
-                window: 64240, // common Windows window
+                window: 64240,
                 mss: Some(1460),
                 df: true,
                 ts: Some(true),
@@ -728,13 +722,13 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
             },
             rst: OsRstFp {
                 ttl: 128,
-                window: 8192, // Windows RST window
+                window: 8192,
                 df: true,
             },
         },
 
         // -------------------------
-        // macOS
+        // macOS (tolerant to LAN behavior)
         // -------------------------
         OsFingerprint {
             name: "macos",
@@ -743,9 +737,16 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 window: 65535,
                 mss: Some(1460),
                 df: true,
+
+                // On LAN, macOS often has TS disabled.
                 ts: Some(false),
+
+                // WS is not reliable in your captures → don't care.
                 ws: None,
-                sackok: Some(false),
+
+                // SACKOK also not reliably visible → don't care.
+                sackok: None,
+
                 ecn: Some(false),
             },
             rst: OsRstFp {
