@@ -157,9 +157,14 @@ pub fn infer_os(
     let mut score_bsd = 0;
     let mut score_network = 0;
 
-    if open_ports.contains(&445) || open_ports.contains(&3389) || open_ports.contains(&135) {
-        score_windows += 50;
+    // 445 alone is NOT strong evidence of Windows.
+// macOS, NAS devices, routers, Linux Samba all expose 445.
+    if open_ports.contains(&3389) || open_ports.contains(&135) {
+        score_windows += 50; // strong Windows signals
+    } else if open_ports.contains(&445) {
+        score_windows += 10; // weak evidence only
     }
+
 
     if open_ports.contains(&22) || open_ports.contains(&111) || open_ports.contains(&631) {
         score_linux += 30;
@@ -308,7 +313,7 @@ pub fn infer_os(
     // ------------------------------
     let mut tcp_evidence = String::new();
 
-    for p in ports_mut {
+    for p in &ports_mut {
         if p.state != "open" && p.state !="closed"{
             continue;
         }
@@ -335,7 +340,9 @@ pub fn infer_os(
         if let Some(ws) = p.window_size {
             let ws  = normalize_window(ws);
             tcp_evidence.push_str(&format!("window: {}\n", ws));
-
+            if ws == 65535 {
+                score_macos += 20;
+            }
             match ws {
                 65535 => { score_windows += 20; score_bsd += 20; }
                 29200 => { score_linux += 20; score_network += 10; } // FritzBox, Linux routers
@@ -408,6 +415,21 @@ pub fn infer_os(
         }
  
 
+    }
+    // Router / embedded Linux signature
+    let is_router_like =
+        ports_mut.iter().any(|p| p.window_size.map(normalize_window) == Some(29200))
+        && !open_ports.contains(&22) // no SSH
+        && !open_ports.contains(&631) // no CUPS
+        && open_ports.contains(&80)
+        && open_ports.contains(&443)
+        && open_ports.contains(&445);
+
+    if is_router_like {
+        score_network += 80;
+        score_linux -= 40;
+        score_macos -= 40;
+        score_windows -= 40;
     }
 
     // ------------------------------
