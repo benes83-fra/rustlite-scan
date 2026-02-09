@@ -76,12 +76,12 @@ impl SmbProbe {
         // Resolve and connect with timeout
         let mut rng = StdRng::from_entropy();
         for attempt in 1..=attempts {
-            if DEBUG { eprintln!("SMB: attempt {} connect -> {}", attempt, addr); }
+            
             match timeout(Duration::from_millis(CONNECT_TIMEOUT_MS), TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => {
-                    if DEBUG { eprintln!("SMB: connected, sending {} bytes", req.len()); }
+                    
                     if let Err(e) = stream.try_write(req) {
-                        eprintln!("SMB: write error: {}", e);
+                       
                         return None;
                     }
                     // wait for response
@@ -304,10 +304,9 @@ impl SmbProbe {
             0usize
         };
         let total_len = resp.len();
-        if DEBUG { eprintln!("SMB: total recv bytes = {}, netbios payload_len = {}", total_len, payload_len); }
         let sig_pos = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
         if sig_pos.is_none() {
-            eprintln!("SMB: no SMB2 signature found");
+           
             // no SMB2 signature: fallback to ascii extraction
             let ascii = SmbProbe::extract_ascii_strings(resp);
             return (None, None, None, Vec::new(), ascii);
@@ -316,11 +315,11 @@ impl SmbProbe {
         let body_off = sig_off + 4 + 64;
         let mut dialect_hex: Option<String> = None;
         let available_body = if payload_len > 64 { payload_len - 64 } else { 0 };
-        if DEBUG { eprintln!("SMB: body_off = {}, available_body = {}", body_off, available_body); }
+        
         if available_body >= 6 && total_len >=body_off + 6{
             let dialect_le = u16::from_le_bytes([resp[body_off + 4], resp[body_off + 5]]);
             let dialect_hex1 = format!("0x{:04x}", dialect_le);
-            eprintln!("SMB: precise dialect read = {}", dialect_hex1);
+           
             
         }else {
         // 2) dialect detection: scan for known dialect u16 values (little-endian) in the response
@@ -328,7 +327,6 @@ impl SmbProbe {
             
             let payload_start = 4usize;
             let payload_end = std::cmp::min(total_len, 4 + payload_len);
-            if DEBUG { eprintln!("SMB: constrained scan payload window {}..{}", payload_start, payload_end); }
             
             for i in (sig_off + 4)..resp.len().saturating_sub(1) {
                 let v = u16::from_le_bytes([resp[i], resp[i+1]]);
@@ -392,7 +390,6 @@ impl SmbProbe {
 
         // 5) ASCII substrings for additional evidence
         let ascii = SmbProbe::extract_ascii_strings(resp);
-        println!("About to check for dialectname...Hey at {:?}", dialect_hex);
         // 6) friendly dialect name lookup
         let dialect_name = dialect_hex.as_ref().and_then(|h| Self::smb2_dialect_name(h).map(|s| s.to_string()));
 
@@ -403,17 +400,13 @@ impl SmbProbe {
     /// Read NetBIOS header then exact SMB2 payload from the stream.
     async fn read_smb2_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut nb = [0u8; 4];
-        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: waiting for NetBIOS header"); }
-
+      
         let to = Duration::from_millis(timeout_ms);
         timeout(to, stream.read_exact(&mut nb)).await??;
-        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: netbios header = {:02x?}", nb); }
-
+     
         let len = ((nb[1] as usize) << 16) | ((nb[2] as usize) << 8) | (nb[3] as usize);
-        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: payload length = {}", len); }
-        let mut payload = vec![0u8; len];
+         let mut payload = vec![0u8; len];
         timeout(to, stream.read_exact(&mut payload)).await??;
-        if DEBUG { eprintln!("SMB-IPC: read_smb2_response: read payload {} bytes", payload.len()); }
         let mut full = Vec::with_capacity(4 + len);
         full.extend_from_slice(&nb);
         full.extend_from_slice(&payload);
@@ -428,10 +421,7 @@ impl SmbProbe {
         let off = sig_pos.unwrap();
         if resp.len() < off + 64 { return (None, None, None, None); }
         // right after finding sig_pos and off
-        if DEBUG {
-            eprintln!("SMB-IPC: parse_smb2_header: sig_off = {}, total_len = {}", off, resp.len());
-            eprintln!("SMB-IPC: parse_smb2_header: header preview = {:02x?}", &resp[off..std::cmp::min(resp.len(), off+64)]);
-        }
+    
 
         // Status (4 bytes) at header offset 8..12 (little-endian)
         let status = u32::from_le_bytes([resp[off + 8], resp[off + 9], resp[off + 10], resp[off + 11]]);
@@ -598,10 +588,10 @@ impl SmbProbe {
 
         // 1) NEGOTIATE (reuse your builder)
         let negotiate = SmbProbe::build_smb2_negotiate();
-        if DEBUG { eprintln!("SMB-IPC: sending negotiate ({} bytes) to {}", negotiate.len(), addr); }
+       
         stream.write_all(&negotiate).await?;
         let resp_negotiate = SmbProbe::read_smb2_response(&mut stream, timeout_ms).await?;
-        if DEBUG { eprintln!("SMB-IPC: negotiate recv {} bytes", resp_negotiate.len()); }
+      
 
         // Parse and record lightweight negotiate evidence using your existing parser
         let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp_negotiate);
@@ -616,7 +606,7 @@ impl SmbProbe {
         let session_setup = SmbProbe::build_smb2_session_setup(session_msgid, 0, &[]);
         // After attempting session setup and detecting a non-success status or connection close:
        
-        if DEBUG { eprintln!("SMB-IPC: sending session_setup"); }
+       
         stream.write_all(&session_setup).await?;
         let resp_session = match SmbProbe::read_smb2_response(&mut stream, timeout_ms).await{
             Ok(sess) =>   {
@@ -628,7 +618,7 @@ impl SmbProbe {
             Err(s)   =>{
                         push_line( evidence, "SMB2_session_ok", "false");
                         push_line( evidence, "SMB2_session_denied", "anonymous_not_allowed");
-                        eprintln!("SMB-IPC: session_setup close because no anonymous login");
+                       
                         return Err(s);
                         
             },
