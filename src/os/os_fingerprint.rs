@@ -132,6 +132,7 @@ pub fn infer_os(
         }
     }
     
+   
 
 
     let mut open_ports: Vec<u16> = ports_mut
@@ -516,6 +517,12 @@ pub fn infer_os(
         }
     }
 
+     let nat_suspect = if let Some(syn_os) = synrst_best_os {
+        syn_os != best_os
+    } else {
+        false
+    };
+
     // ------------------------------
     // 7. Build evidence string
     // ------------------------------
@@ -550,6 +557,20 @@ pub fn infer_os(
     // 8. Build synthetic fingerprint
     // ------------------------------
     let mut fp = ServiceFingerprint::from_banner(ip, 0, "os", evidence);
+    fp.confidence = final_confidence;
+
+    // NAT detection (optional ICMP TTL: pass None for now)
+    let is_nat = detect_nat(
+        synrst_best_os.as_deref(),
+        final_os,
+        &syn_fp,
+        None, // you can add ICMP TTL later
+    );
+
+    if is_nat {
+        fp.service = Some(format!("{} (behind NAT)", final_os));
+    }
+
     fp.confidence = final_confidence;
 
     Some(fp)
@@ -823,4 +844,49 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
             },
         },
     ]
+}
+
+
+
+fn detect_nat(
+    syn_os: Option<&str>,
+    heuristic_os: &str,
+    syn_fp: &Option<SynAckFp>,
+    icmp_ttl: Option<u8>,
+) -> bool {
+    let mut nat_score = 0;
+
+    // 1. SYN OS != heuristic OS
+    if let Some(syn) = syn_os {
+        if syn != heuristic_os {
+            nat_score += 50;
+        }
+    }
+
+    // 2. SYN TTL != ICMP TTL
+    if let (Some(syn), Some(icmp)) = (syn_fp.as_ref().and_then(|s| s.ttl), icmp_ttl) {
+        if normalize_ttl(syn) != normalize_ttl(icmp) {
+            nat_score += 50;
+        }
+    }
+
+    // 3. macOS banners but Linux/Router SYN
+    if heuristic_os == "macos" {
+        if let Some(s) = syn_fp {
+            if normalize_window(s.window.unwrap_or(0)) == 29200 {
+                nat_score += 40;
+            }
+        }
+    }
+
+    // 4. macOS banners but TS/SACK/WS all missing
+    if heuristic_os == "macos" {
+        if let Some(s) = syn_fp {
+            if s.ts == Some(false) && s.ws.is_none() && s.sackok == Some(false) {
+                nat_score += 30;
+            }
+        }
+    }
+
+    nat_score >= 60
 }
