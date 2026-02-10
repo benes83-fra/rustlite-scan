@@ -559,6 +559,17 @@ pub fn infer_os(
     let mut fp = ServiceFingerprint::from_banner(ip, 0, "os", evidence);
     fp.confidence = final_confidence;
 
+
+    if let Some(ev) = &fp.evidence {
+        if let Some(line) = ev.lines().find(|l| l.starts_with("tcp_syn_vendor: ")) {
+            let vendor = line.trim_start_matches("tcp_syn_vendor: ").trim();
+            if vendor == "Apple" { score_macos += 50; }
+            if vendor == "AVM GmbH" { score_network += 80; }
+        
+        }
+    }
+
+
     // NAT detection (optional ICMP TTL: pass None for now)
     let is_nat = detect_nat(
         synrst_best_os.as_deref(),

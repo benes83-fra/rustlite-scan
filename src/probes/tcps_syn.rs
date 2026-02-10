@@ -275,6 +275,17 @@ mod win {
         let target_mac = resolve_mac(&iface, ip)?;
         let source_mac = iface.mac?.octets();
        
+        let mac_str = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            target_mac[0], target_mac[1], target_mac[2],
+            target_mac[3], target_mac[4], target_mac[5]
+        );
+
+        let vendor = crate::os::oui::lookup_vendor(&mac_str)
+            .unwrap_or("Unknown");
+
+
+
         // Build Ethernet frame
         let mut frame = vec![0u8; 14 + syn.len()];
         {
@@ -323,6 +334,9 @@ mod win {
                     ev.push_str(&format!("tcp_syn_ws: {}\n", meta.ws.unwrap_or(0)));
                     ev.push_str(&format!("tcp_syn_sackok: {}\n", meta.sackok));
                     ev.push_str(&format!("tcp_syn_ecn: {}\n", meta.ecn));
+
+                    ev.push_str(&format!("tcp_syn_mac: {}\n", mac_str));
+                    ev.push_str(&format!("tcp_syn_vendor: {}\n", vendor));
 
 
                     let mut fp = ServiceFingerprint::from_banner(
