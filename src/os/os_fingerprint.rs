@@ -562,9 +562,20 @@ pub fn infer_os(
 
     if let Some(ev) = &fp.evidence {
         if let Some(line) = ev.lines().find(|l| l.starts_with("tcp_syn_vendor: ")) {
-            let vendor = line.trim_start_matches("tcp_syn_vendor: ").trim();
-            if vendor == "Apple" { score_macos += 50; }
-            if vendor == "AVM GmbH" { score_network += 80; }
+            let vendor = line.trim_start_matches("tcp_syn_vendor: ").trim().to_lowercase();
+            if vendor.contains ("apple"){
+                score_macos +=50;
+            }else if vendor.contains ("avm"){
+                score_network +=80;
+            }else if vendor.contains ("intel") || vendor.contains ("realtek"){
+                score_linux +=20;
+            }else if vendor.contains ("microsoft"){
+                score_windows += 50;
+            }else if vendor.contains ("ubiquiti"){
+                score_network +=80;
+            }else if vendor.contains ("synology") || vendor.contains ("qnap"){
+                score_network += 60;
+            }
         
         }
     }
