@@ -28,6 +28,7 @@ pub mod rtsp;
 pub mod ntp;
 pub mod vnc;
 pub mod ssdp;
+pub mod tls_ja3;
 pub mod sip;
 pub mod mqtt;
 pub mod memcached;
