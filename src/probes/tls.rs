@@ -34,6 +34,16 @@ impl Probe for TlsProbe {
         let stream = TcpStream::connect(&addr).ok()?;
         let ssl_stream = connector.connect(ip, stream).ok()?; // "ip" here is fine
 
+        let ssl = ssl_stream.ssl();
+
+        // NEW: TLS negotiation fingerprint
+        let (neg_str, ja3s_like) = crate::probes::tls_ja3::build_tls_server_fingerprint(ssl);
+
+        let mut evidence = String::new();
+        evidence.push_str(&format!("tls_negotiation: {}\n", neg_str));
+        evidence.push_str(&format!("tls_ja3s_like: {}\n", ja3s_like));
+
+
         // Grab peer cert
         let cert = ssl_stream.ssl().peer_certificate()?;
         let der = cert.to_der().ok()?;
@@ -58,7 +68,18 @@ impl Probe for TlsProbe {
             }
         }
 
-        Some(ServiceFingerprint::from_tls_cert(ip, port, subject_cn, sans))
+        // Preserve your existing SAN + CN logic
+            let mut fp = ServiceFingerprint::from_tls_cert(ip, port, subject_cn, sans);
+
+            // Append our new evidence to the existing evidence
+            if let Some(old) = fp.evidence.take() {
+                fp.evidence = Some(format!("{}\n{}", evidence, old));
+            } else {
+                fp.evidence = Some(evidence);
+            }
+
+            Some(fp)
+
     }
 
     fn ports(&self) -> Vec<u16> {

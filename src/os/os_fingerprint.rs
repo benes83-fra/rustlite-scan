@@ -417,6 +417,8 @@ pub fn infer_os(
  
 
     }
+
+
     // Router / embedded Linux signature
     let is_router_like =
         ports_mut.iter().any(|p| p.window_size.map(normalize_window) == Some(29200))
@@ -579,7 +581,26 @@ pub fn infer_os(
         
         }
     }
+        if fp.protocol == "tls" {
+        if let Some(ev) = &fp.evidence {
+            for line in ev.lines() {
+                if let Some(v) = line.strip_prefix("tls_ja3s_like: ") {
+                    let h = v.trim();
 
+                    // Example heuristics — tune after collecting real data
+                    if ev.contains("nginx") {
+                        score_linux += 20;
+                    }
+                    if ev.contains("Microsoft") || ev.contains("IIS") {
+                        score_windows += 40;
+                    }
+                    if ev.contains("Apple") || ev.contains("Darwin") {
+                        score_macos += 30;
+                    }
+                }
+            }
+        }
+    }
 
     // NAT detection (optional ICMP TTL: pass None for now)
     let is_nat = detect_nat(
