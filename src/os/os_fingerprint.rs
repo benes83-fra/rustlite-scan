@@ -524,6 +524,52 @@ pub fn infer_os(
     } else {
         false
     };
+     // ------------------------------
+    // Firewall / SYN proxy detection
+    // ------------------------------
+    let mut firewall_suspect = false;
+    let mut firewall_reason = String::new();
+
+    // 1. SYN cookies: no TS, no WS, no SACK, MSS <= 536
+    if let Some(s) = &syn_fp {
+        let no_options =
+            s.ts == Some(false) &&
+            s.ws.is_none() &&
+            s.sackok == Some(false);
+
+        if no_options && s.mss.unwrap_or(1460) <= 536 {
+            firewall_suspect = true;
+            firewall_reason.push_str("syn_cookies_detected; ");
+        }
+    }
+
+    // 2. SYN proxy: SYN fingerprint OS != heuristic OS
+    if let Some(syn_os) = synrst_best_os {
+        if syn_os != final_os {
+            firewall_suspect = true;
+            firewall_reason.push_str("syn_proxy_mismatch; ");
+        }
+    }
+
+    // 3. SYN TTL != RST TTL (proxy or middlebox)
+    if let (Some(syn), Some(rst)) = (syn_fp.as_ref(), rst_fp.as_ref()) {
+        if let (Some(t1), Some(t2)) = (syn.ttl, rst.ttl) {
+            if normalize_ttl(t1) != normalize_ttl(t2) {
+                firewall_suspect = true;
+                firewall_reason.push_str("ttl_inconsistency; ");
+            }
+        }
+    }
+
+    // 4. SYN window extremely small (firewall SYN/ACK)
+    if let Some(s) = &syn_fp {
+        if let Some(w) = s.window {
+            if w < 2048 {
+                firewall_suspect = true;
+                firewall_reason.push_str("tiny_syn_window; ");
+            }
+        }
+    }
 
     // ------------------------------
     // 7. Build evidence string
@@ -553,6 +599,10 @@ pub fn infer_os(
     if let Some(os) = synrst_best_os {
         evidence.push_str(&format!("syn_fp_os: {}\n", os));
         evidence.push_str(&format!("syn_fp_score: {}\n", synrst_best_score));
+    }
+    if firewall_suspect {
+        evidence.push_str(&format!("firewall_suspect: true\n"));
+        evidence.push_str(&format!("firewall_reason: {}\n", firewall_reason));
     }
 
     // ------------------------------
@@ -613,6 +663,7 @@ pub fn infer_os(
     if is_nat {
         fp.service = Some(format!("{} (behind NAT)", final_os));
     }
+   
 
     fp.confidence = final_confidence;
 
