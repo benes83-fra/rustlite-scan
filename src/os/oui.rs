@@ -38,7 +38,7 @@ pub fn lookup_vendor(mac: &str) -> Option<&'static str> {
 
         // Synology
         "001132" => "Synology",
-        
+
 
         // QNAP
         "245EBE" => "QNAP",

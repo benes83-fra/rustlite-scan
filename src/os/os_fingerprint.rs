@@ -1,7 +1,6 @@
 use crate::service::ServiceFingerprint;
 use crate::types::PortResult;
 
-
 use std::collections::BTreeSet;
 
 fn dedupe_lines(s: &str) -> String {
@@ -14,7 +13,6 @@ fn dedupe_lines(s: &str) -> String {
     }
     set.into_iter().collect::<Vec<_>>().join("\n")
 }
-
 
 #[derive(Debug, Clone)]
 pub struct SynAckFp {
@@ -86,8 +84,6 @@ struct OsFingerprint {
     rst: OsRstFp,
 }
 
-
-
 pub fn infer_os(
     ip: &str,
     ports: &[PortResult],
@@ -98,7 +94,6 @@ pub fn infer_os(
     // ------------------------------
     let mut ports_mut = ports.to_vec();
     apply_tcp_syn_to_ports(&mut ports_mut, service_fps);
-
 
     // Extract SYN/ACK fingerprint (from any open TCP port)
     let syn_fp = ports_mut
@@ -131,9 +126,6 @@ pub fn infer_os(
             }
         }
     }
-    
-   
-
 
     let mut open_ports: Vec<u16> = ports_mut
         .iter()
@@ -143,7 +135,6 @@ pub fn infer_os(
 
     open_ports.sort_unstable();
     open_ports.dedup();
-
 
     if open_ports.is_empty() {
         return None;
@@ -159,13 +150,12 @@ pub fn infer_os(
     let mut score_network = 0;
 
     // 445 alone is NOT strong evidence of Windows.
-// macOS, NAS devices, routers, Linux Samba all expose 445.
+    // macOS, NAS devices, routers, Linux Samba all expose 445.
     if open_ports.contains(&3389) || open_ports.contains(&135) {
         score_windows += 50; // strong Windows signals
     } else if open_ports.contains(&445) {
         score_windows += 10; // weak evidence only
     }
-
 
     if open_ports.contains(&22) || open_ports.contains(&111) || open_ports.contains(&631) {
         score_linux += 30;
@@ -222,7 +212,8 @@ pub fn infer_os(
                 score_bsd += 70;
             }
 
-            if b.contains("openssh_for_windows") || b.contains("winssh") || b.contains("powershell") {
+            if b.contains("openssh_for_windows") || b.contains("winssh") || b.contains("powershell")
+            {
                 score_windows += 80;
                 score_linux -= 20;
                 score_macos -= 20;
@@ -315,7 +306,7 @@ pub fn infer_os(
     let mut tcp_evidence = String::new();
 
     for p in &ports_mut {
-        if p.state != "open" && p.state !="closed"{
+        if p.state != "open" && p.state != "closed" {
             continue;
         }
         // TTL
@@ -339,27 +330,36 @@ pub fn infer_os(
 
         // Window size
         if let Some(ws) = p.window_size {
-            let ws  = normalize_window(ws);
+            let ws = normalize_window(ws);
             tcp_evidence.push_str(&format!("window: {}\n", ws));
             if ws == 65535 {
                 score_macos += 20;
             }
             match ws {
-                65535 => { score_windows += 20; score_bsd += 20; }
-                29200 => { score_linux += 20; score_network += 10; } // FritzBox, Linux routers
+                65535 => {
+                    score_windows += 20;
+                    score_bsd += 20;
+                }
+                29200 => {
+                    score_linux += 20;
+                    score_network += 10;
+                } // FritzBox, Linux routers
                 8192 | 64240 => score_windows += 20,
                 _ => {}
             }
         }
 
-
         // MSS
-         if let Some(mss) = p.mss {
+        if let Some(mss) = p.mss {
             let mss = normalize_mss(mss);
             tcp_evidence.push_str(&format!("mss: {}\n", mss));
 
             match mss {
-                1460 => { score_linux += 10; score_macos += 10; score_network += 10; }
+                1460 => {
+                    score_linux += 10;
+                    score_macos += 10;
+                    score_network += 10;
+                }
                 1440 => score_windows += 20,
                 _ if mss <= 536 => score_network += 30,
                 _ => {}
@@ -367,7 +367,7 @@ pub fn infer_os(
         }
 
         // DF flag
-       if let Some(df) = p.df {
+        if let Some(df) = p.df {
             tcp_evidence.push_str(&format!("df: {}\n", df));
 
             if !df {
@@ -414,14 +414,10 @@ pub fn infer_os(
                 score_linux += 10; // Linux enables ECN more often
             }
         }
- 
-
     }
 
-
     // Router / embedded Linux signature
-    let is_router_like =
-        ports_mut.iter().any(|p| p.window_size.map(normalize_window) == Some(29200))
+    let is_router_like = ports_mut.iter().any(|p| p.window_size.map(normalize_window) == Some(29200))
         && !open_ports.contains(&22) // no SSH
         && !open_ports.contains(&631) // no CUPS
         && open_ports.contains(&80)
@@ -467,7 +463,11 @@ pub fn infer_os(
         ("network_device", score_network),
     ];
 
-    let max1 = scores.iter().max_by_key(|(_, s)| *s).map(|(_, s)| *s).unwrap_or(0);
+    let max1 = scores
+        .iter()
+        .max_by_key(|(_, s)| *s)
+        .map(|(_, s)| *s)
+        .unwrap_or(0);
     let max2 = scores
         .iter()
         .filter(|(_, s)| *s != max1)
@@ -500,7 +500,7 @@ pub fn infer_os(
     }
 
     // Confidence shaping: simple clamp for now
-       // Confidence shaping: simple clamp for now
+    // Confidence shaping: simple clamp for now
     let best_score = best_score_i32.min(100).max(10) as u8;
 
     // ------------------------------
@@ -519,12 +519,12 @@ pub fn infer_os(
         }
     }
 
-     let nat_suspect = if let Some(syn_os) = synrst_best_os {
+    let nat_suspect = if let Some(syn_os) = synrst_best_os {
         syn_os != best_os
     } else {
         false
     };
-     // ------------------------------
+    // ------------------------------
     // Firewall / SYN proxy detection
     // ------------------------------
     let mut firewall_suspect = false;
@@ -532,10 +532,7 @@ pub fn infer_os(
 
     // 1. SYN cookies: no TS, no WS, no SACK, MSS <= 536
     if let Some(s) = &syn_fp {
-        let no_options =
-            s.ts == Some(false) &&
-            s.ws.is_none() &&
-            s.sackok == Some(false);
+        let no_options = s.ts == Some(false) && s.ws.is_none() && s.sackok == Some(false);
 
         if no_options && s.mss.unwrap_or(1460) <= 536 {
             firewall_suspect = true;
@@ -568,6 +565,49 @@ pub fn infer_os(
                 firewall_suspect = true;
                 firewall_reason.push_str("tiny_syn_window; ");
             }
+        }
+    }
+
+    let mut synproxy_suspect = false;
+    let mut synproxy_reason = String::new();
+
+    let mut syn_time: Option<u128> = None;
+    let mut rst_time: Option<u128> = None;
+
+    // Extract timing from evidence
+    for fp in service_fps {
+        if fp.protocol == "tcp_syn" {
+            if let Some(ev) = &fp.evidence {
+                for line in ev.lines() {
+                    if let Some(v) = line.strip_prefix("tcp_syn_time: ") {
+                        syn_time = v.trim().parse::<u128>().ok();
+                    }
+                }
+            }
+        }
+        if fp.protocol == "tcp" {
+            if let Some(ev) = &fp.evidence {
+                for line in ev.lines() {
+                    if let Some(v) = line.strip_prefix("tcp_rst_time: ") {
+                        rst_time = v.trim().parse::<u128>().ok();
+                    }
+                }
+            }
+        }
+    }
+
+    // Timing analysis
+    if let (Some(st), Some(rt)) = (syn_time, rst_time) {
+        let delta = rt.saturating_sub(st);
+
+        if st < 1000 && delta > 20_000 {
+            synproxy_suspect = true;
+            synproxy_reason.push_str("fast_synack_slow_rst; ");
+        }
+
+        if delta > 50_000 {
+            synproxy_suspect = true;
+            synproxy_reason.push_str("large_syn_rst_gap; ");
         }
     }
 
@@ -604,34 +644,38 @@ pub fn infer_os(
         evidence.push_str(&format!("firewall_suspect: true\n"));
         evidence.push_str(&format!("firewall_reason: {}\n", firewall_reason));
     }
-
+    if synproxy_suspect {
+        evidence.push_str("synproxy_suspect: true\n");
+        evidence.push_str(&format!("synproxy_reason: {}\n", synproxy_reason));
+    }
     // ------------------------------
     // 8. Build synthetic fingerprint
     // ------------------------------
     let mut fp = ServiceFingerprint::from_banner(ip, 0, "os", evidence);
     fp.confidence = final_confidence;
 
-
     if let Some(ev) = &fp.evidence {
         if let Some(line) = ev.lines().find(|l| l.starts_with("tcp_syn_vendor: ")) {
-            let vendor = line.trim_start_matches("tcp_syn_vendor: ").trim().to_lowercase();
-            if vendor.contains ("apple"){
-                score_macos +=50;
-            }else if vendor.contains ("avm"){
-                score_network +=80;
-            }else if vendor.contains ("intel") || vendor.contains ("realtek"){
-                score_linux +=20;
-            }else if vendor.contains ("microsoft"){
+            let vendor = line
+                .trim_start_matches("tcp_syn_vendor: ")
+                .trim()
+                .to_lowercase();
+            if vendor.contains("apple") {
+                score_macos += 50;
+            } else if vendor.contains("avm") {
+                score_network += 80;
+            } else if vendor.contains("intel") || vendor.contains("realtek") {
+                score_linux += 20;
+            } else if vendor.contains("microsoft") {
                 score_windows += 50;
-            }else if vendor.contains ("ubiquiti"){
-                score_network +=80;
-            }else if vendor.contains ("synology") || vendor.contains ("qnap"){
+            } else if vendor.contains("ubiquiti") {
+                score_network += 80;
+            } else if vendor.contains("synology") || vendor.contains("qnap") {
                 score_network += 60;
             }
-        
         }
     }
-        if fp.protocol == "tls" {
+    if fp.protocol == "tls" {
         if let Some(ev) = &fp.evidence {
             for line in ev.lines() {
                 if let Some(v) = line.strip_prefix("tls_ja3s_like: ") {
@@ -663,24 +707,20 @@ pub fn infer_os(
     if is_nat {
         fp.service = Some(format!("{} (behind NAT)", final_os));
     }
-   
 
     fp.confidence = final_confidence;
 
     Some(fp)
-
 }
 
-
-
-pub fn apply_tcp_syn_to_ports(
-    ports: &mut [PortResult],
-    fps: &[ServiceFingerprint],
-) {
+pub fn apply_tcp_syn_to_ports(ports: &mut [PortResult], fps: &[ServiceFingerprint]) {
     for fp in fps.iter().filter(|f| f.protocol == "tcp_syn") {
         let port = fp.port;
 
-        if let Some(pr) = ports.iter_mut().find(|p| p.protocol == "tcp" && p.port == port) {
+        if let Some(pr) = ports
+            .iter_mut()
+            .find(|p| p.protocol == "tcp" && p.port == port)
+        {
             if let Some(ev) = &fp.evidence {
                 for line in ev.lines() {
                     if let Some(v) = line.strip_prefix("tcp_syn_ttl: ") {
@@ -706,13 +746,11 @@ pub fn apply_tcp_syn_to_ports(
                     } else if let Some(v) = line.strip_prefix("tcp_syn_ecn: ") {
                         pr.ecn = Some(v.trim() == "true");
                     }
-                    
                 }
             }
         }
     }
 }
-
 
 fn normalize_ttl(observed: u8) -> u8 {
     match observed {
@@ -731,14 +769,12 @@ fn normalize_window(w: u32) -> u32 {
     }
 }
 
-
 fn normalize_mss(m: u16) -> u16 {
     match m {
         1440..=1460 => 1460,
         _ => m,
     }
 }
-
 
 fn score_syn(obs: &SynAckFp, fp: &OsSynFp) -> i32 {
     let mut s = 0;
@@ -790,7 +826,6 @@ fn score_syn(obs: &SynAckFp, fp: &OsSynFp) -> i32 {
     s
 }
 
-
 fn score_rst(obs: &RstFp, fp: &OsRstFp) -> i32 {
     let mut s = 0;
 
@@ -816,8 +851,6 @@ fn score_rst(obs: &RstFp, fp: &OsRstFp) -> i32 {
     s
 }
 
-
-
 fn os_fingerprint_table() -> Vec<OsFingerprint> {
     vec![
         // -------------------------
@@ -841,7 +874,6 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 df: true,
             },
         },
-
         // -------------------------
         // Windows 10/11
         // -------------------------
@@ -863,7 +895,6 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 df: true,
             },
         },
-
         // -------------------------
         // macOS (tolerant to LAN behavior)
         // -------------------------
@@ -892,7 +923,6 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 df: true,
             },
         },
-
         // -------------------------
         // BSD (FreeBSD/OpenBSD/NetBSD)
         // -------------------------
@@ -914,7 +944,6 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
                 df: true,
             },
         },
-
         // -------------------------
         // Embedded Linux / Routers
         // FritzBox, OpenWRT, ISP boxes
@@ -939,8 +968,6 @@ fn os_fingerprint_table() -> Vec<OsFingerprint> {
         },
     ]
 }
-
-
 
 fn detect_nat(
     syn_os: Option<&str>,

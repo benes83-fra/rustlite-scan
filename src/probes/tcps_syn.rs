@@ -1,23 +1,23 @@
-use async_trait::async_trait;
+use crate::probes::tcp_syn_helper;
 use crate::probes::{Probe, ProbeContext};
 use crate::service::ServiceFingerprint;
 use crate::types::PortResult;
-use std::net::IpAddr;
-use std::os::raw::c_ushort;
+use async_trait::async_trait;
 use pnet::datalink;
 use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
 use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
-use pnet::packet::MutablePacket;
-use pnet::packet::Packet;
-use pnet::packet::ipv4::MutableIpv4Packet;
 use pnet::packet::ipv4::checksum as ipchecksum;
+use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::ipv4::MutableIpv4Packet;
 use pnet::packet::tcp::MutableTcpPacket;
 use pnet::packet::tcp::TcpFlags;
-use std::convert::TryInto;
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::tcp::TcpPacket;
-use crate::probes::tcp_syn_helper;
+use pnet::packet::MutablePacket;
+use pnet::packet::Packet;
+use std::convert::TryInto;
+use std::net::IpAddr;
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::os::raw::c_ushort;
 pub struct TcpSynProbe;
 
 #[async_trait]
@@ -48,147 +48,142 @@ impl Probe for TcpSynProbe {
     }
 }
 
+pub fn hex_line(buf: &[u8]) -> String {
+    buf.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
+pub fn resolve_mac(interface: &datalink::NetworkInterface, target_ip: Ipv4Addr) -> Option<[u8; 6]> {
+    let source_mac = interface.mac?.octets();
+    let source_ip = interface.ips.iter().find_map(|ip| {
+        if let std::net::IpAddr::V4(v4) = ip.ip() {
+            Some(v4)
+        } else {
+            None
+        }
+    })?;
 
+    let mut arp_buf = [0u8; 42];
+    {
+        let mut eth = MutableEthernetPacket::new(&mut arp_buf[..]).unwrap();
+        eth.set_destination([0xff; 6].into()); // broadcast
+        eth.set_source(source_mac.into());
+        eth.set_ethertype(EtherTypes::Arp);
 
-    pub fn hex_line (buf : &[u8]) -> String {
-        buf.iter().map(|b| format!("{:02x}",b)).collect::<Vec<_>>().join(" ")
+        let mut arp = MutableArpPacket::new(eth.payload_mut()).unwrap();
+        arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+        arp.set_protocol_type(EtherTypes::Ipv4);
+        arp.set_hw_addr_len(6);
+        arp.set_proto_addr_len(4);
+        arp.set_operation(ArpOperations::Request);
+        arp.set_sender_hw_addr(source_mac.into());
+        arp.set_sender_proto_addr(source_ip.octets().into());
+        arp.set_target_hw_addr([0u8; 6].into());
+        arp.set_target_proto_addr(target_ip.octets().into());
     }
 
-    pub fn resolve_mac(interface: &datalink::NetworkInterface, target_ip: Ipv4Addr) -> Option<[u8; 6]> {
-        let source_mac = interface.mac?.octets();
-        let source_ip = interface.ips.iter().find_map(|ip| {
-            if let std::net::IpAddr::V4(v4) = ip.ip() {
-                Some(v4)
-            } else {
-                None
-            }
-        })?;
+    // Send ARP request
 
-        let mut arp_buf = [0u8; 42];
-        {
-            let mut eth = MutableEthernetPacket::new(&mut arp_buf[..]).unwrap();
-            eth.set_destination([0xff; 6].into()); // broadcast
-            eth.set_source(source_mac.into());
-            eth.set_ethertype(EtherTypes::Arp);
+    let config = datalink::Config::default();
+    let channel = datalink::channel(interface, config).ok()?;
 
-            let mut arp = MutableArpPacket::new(eth.payload_mut()).unwrap();
-            arp.set_hardware_type(ArpHardwareTypes::Ethernet);
-            arp.set_protocol_type(EtherTypes::Ipv4);
-            arp.set_hw_addr_len(6);
-            arp.set_proto_addr_len(4);
-            arp.set_operation(ArpOperations::Request);
-            arp.set_sender_hw_addr(source_mac.into());
-            arp.set_sender_proto_addr(source_ip.octets().into());
-            arp.set_target_hw_addr([0u8; 6].into());
-            arp.set_target_proto_addr(target_ip.octets().into());
-        }
+    let (mut tx, mut rx) = match channel {
+        datalink::Channel::Ethernet(tx, rx) => (tx, rx),
+        _ => return None,
+    };
+    match tx.send_to(&arp_buf, None) {
+        Some(Ok(())) => {}
+        _ => return None,
+    };
 
-        // Send ARP request
-    
-        let config = datalink::Config::default();
-        let channel = datalink::channel(interface, config).ok()?;
-
-        let (mut tx, mut rx) = match channel {
-            datalink::Channel::Ethernet(tx, rx) => (tx, rx),
-            _ => return None,
-        };
-        match tx.send_to(&arp_buf, None){
-            Some(Ok(())) => {},
-            _ => return None,
-        };
-
-        // Wait for ARP reply
-        let start = std::time::Instant::now();
-        while start.elapsed().as_millis() < 500 {
-            if let Ok(packet) = rx.next() {
-                if let Some(mut eth) = MutableEthernetPacket::new(packet.to_vec().as_mut_slice()) {
-                    if eth.get_ethertype() == EtherTypes::Arp {
-                        if let Some(arp) = ArpPacket::new(eth.payload_mut()) {
-                            if arp.get_operation() == ArpOperations::Reply &&
-                            arp.get_sender_proto_addr() == target_ip {
-                                return Some(arp.get_sender_hw_addr().octets());
-                            }
+    // Wait for ARP reply
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < 500 {
+        if let Ok(packet) = rx.next() {
+            if let Some(mut eth) = MutableEthernetPacket::new(packet.to_vec().as_mut_slice()) {
+                if eth.get_ethertype() == EtherTypes::Arp {
+                    if let Some(arp) = ArpPacket::new(eth.payload_mut()) {
+                        if arp.get_operation() == ArpOperations::Reply
+                            && arp.get_sender_proto_addr() == target_ip
+                        {
+                            return Some(arp.get_sender_hw_addr().octets());
                         }
                     }
                 }
             }
         }
-
-        None
     }
 
-    use pnet::packet::ipv4::checksum as ipv4_checksum;
-    use pnet::packet::tcp::ipv4_checksum as tcp_ipv4_checksum;
-    pub fn compute_checksums(syn: &mut [u8], local_ip: Ipv4Addr, target_ip: Ipv4Addr) {
-        let ihl = (syn[0] & 0x0f) as usize;
-        let ip_header_len = ihl * 4;
-        let tcp_offset = ip_header_len;
+    None
+}
 
-        {
-            let mut ip_pkt = MutableIpv4Packet::new(&mut syn[..ip_header_len]).expect("ip header");
-            ip_pkt.set_checksum(0);
-            let csum = ipv4_checksum(&ip_pkt.to_immutable());
-            ip_pkt.set_checksum(csum);
-        }
+use pnet::packet::ipv4::checksum as ipv4_checksum;
+use pnet::packet::tcp::ipv4_checksum as tcp_ipv4_checksum;
+pub fn compute_checksums(syn: &mut [u8], local_ip: Ipv4Addr, target_ip: Ipv4Addr) {
+    let ihl = (syn[0] & 0x0f) as usize;
+    let ip_header_len = ihl * 4;
+    let tcp_offset = ip_header_len;
 
-        {
-            let mut tcp_pkt = MutableTcpPacket::new(&mut syn[tcp_offset..]).expect("tcp header");
-            tcp_pkt.set_checksum(0);
-            let tcp_csum = tcp_ipv4_checksum(&tcp_pkt.to_immutable(), &local_ip, &target_ip);
-            tcp_pkt.set_checksum(tcp_csum);
-        }
-        {
-           
-
-            let ip_pkt = Ipv4Packet::new(&syn[..ip_header_len]).unwrap();
-           
-            let tcp_pkt = TcpPacket::new(&syn[tcp_offset..]).unwrap();
-        
-        }
+    {
+        let mut ip_pkt = MutableIpv4Packet::new(&mut syn[..ip_header_len]).expect("ip header");
+        ip_pkt.set_checksum(0);
+        let csum = ipv4_checksum(&ip_pkt.to_immutable());
+        ip_pkt.set_checksum(csum);
     }
 
-   pub fn same_subnet(iface: &datalink::NetworkInterface, target: Ipv4Addr) -> bool {
-        iface.ips.iter().any(|ipn| {
-            if let std::net::IpAddr::V4(ip) = ipn.ip() {
-                if let std::net::IpAddr::V4(mask) = ipn.mask() {
-                    let ip_u32 = u32::from(ip);
-                    let mask_u32 = u32::from(mask);
-                    let tgt_u32 = u32::from(target);
-                    (ip_u32 & mask_u32) == (tgt_u32 & mask_u32)
-                } else { false }
-            } else { false }
-        })
+    {
+        let mut tcp_pkt = MutableTcpPacket::new(&mut syn[tcp_offset..]).expect("tcp header");
+        tcp_pkt.set_checksum(0);
+        let tcp_csum = tcp_ipv4_checksum(&tcp_pkt.to_immutable(), &local_ip, &target_ip);
+        tcp_pkt.set_checksum(tcp_csum);
     }
-   
+    {
+        let ip_pkt = Ipv4Packet::new(&syn[..ip_header_len]).unwrap();
 
+        let tcp_pkt = TcpPacket::new(&syn[tcp_offset..]).unwrap();
+    }
+}
 
+pub fn same_subnet(iface: &datalink::NetworkInterface, target: Ipv4Addr) -> bool {
+    iface.ips.iter().any(|ipn| {
+        if let std::net::IpAddr::V4(ip) = ipn.ip() {
+            if let std::net::IpAddr::V4(mask) = ipn.mask() {
+                let ip_u32 = u32::from(ip);
+                let mask_u32 = u32::from(mask);
+                let tgt_u32 = u32::from(target);
+                (ip_u32 & mask_u32) == (tgt_u32 & mask_u32)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    })
+}
 
 #[cfg(all(feature = "syn_fingerprint"))]
 mod win {
-    
+
     use super::tcp_syn_helper::{build_syn_packet, parse_tcp_meta_ipv4};
+    use crate::probes::tcps_syn::{compute_checksums, hex_line, resolve_mac, same_subnet};
     use crate::service::ServiceFingerprint;
     use pcap::{Active, Capture, Device};
-    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-    use tokio::task;
-    use std::net::IpAddr;
-    use std::os::raw::c_ushort;
     use pnet::datalink;
     use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
     use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
-    use pnet::packet::MutablePacket;
-    use pnet::packet::Packet;
-    use pnet::packet::ipv4::MutableIpv4Packet;
     use pnet::packet::ipv4::checksum as ipchecksum;
+    use pnet::packet::ipv4::MutableIpv4Packet;
     use pnet::packet::tcp::MutableTcpPacket;
     use pnet::packet::tcp::TcpFlags;
+    use pnet::packet::MutablePacket;
+    use pnet::packet::Packet;
     use std::convert::TryInto;
-    use crate::probes::tcps_syn::{hex_line, resolve_mac,compute_checksums,same_subnet};
-
-    
- 
-
+    use std::net::IpAddr;
+    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+    use std::os::raw::c_ushort;
+    use tokio::task;
 
     pub async fn tcp_syn_fingerprint(ip: &str, port: u16) -> Option<ServiceFingerprint> {
         let ip = ip.parse::<Ipv4Addr>().ok()?;
@@ -210,29 +205,31 @@ mod win {
             }
         };
 
-        let real_dev = Device::list().ok()?
+        let real_dev = Device::list()
+            .ok()?
             .into_iter()
             .find(|d| {
-                d.addresses.iter().any(|a| {
-                    match a.addr {
-                        IpAddr::V4(ipv4) => ipv4 == local_ip,
-                        _ => false,
-                    }
+                d.addresses.iter().any(|a| match a.addr {
+                    IpAddr::V4(ipv4) => ipv4 == local_ip,
+                    _ => false,
                 })
             })
             .unwrap_or_else(|| {
                 // Fallback: just use lookup() if matching by IP fails
-                Device::lookup().ok().flatten().expect("No pcap device available")
+                Device::lookup()
+                    .ok()
+                    .flatten()
+                    .expect("No pcap device available")
             });
         let mut device = real_dev;
-        let mut cap: Capture<Active> =
-            Capture::from_device(device.clone()).ok()?
+        let mut cap: Capture<Active> = Capture::from_device(device.clone())
+            .ok()?
             .immediate_mode(true)
             .snaplen(5000)
-            .open().ok()?;
+            .open()
+            .ok()?;
         cap = cap.setnonblock().ok()?;
-        let stats  = cap.stats().unwrap().clone();
-    
+        let stats = cap.stats().unwrap().clone();
 
         let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
         sock.connect(SocketAddrV4::new(ip, port)).ok()?;
@@ -247,8 +244,8 @@ mod win {
             ip, port, local_ip, src_port
         );
         cap.filter(&filter, true).ok()?;
-        
-    // Resolve MAC
+
+        // Resolve MAC
         let ihl = (syn[0] & 0x0f) as usize;
         let ip_header_len = ihl * 4;
         let tcp_offset = ip_header_len;
@@ -258,33 +255,31 @@ mod win {
         compute_checksums(&mut syn, local_ip, ip);
 
         // Optional debug prints: verify checksums before sending
-        
-        
+
         let iface_name = device.name.clone();
         let interfaces = datalink::interfaces();
         let iface = interfaces.into_iter().find(|i| i.name == iface_name)?;
-        
-        
+
         let is_lan = same_subnet(&iface, ip);
 
-       
         if !is_lan {
-            return tcp_syn_fingerprint_wan( &mut cap, local_ip, ip, port);
+            return tcp_syn_fingerprint_wan(&mut cap, local_ip, ip, port);
         }
 
         let target_mac = resolve_mac(&iface, ip)?;
         let source_mac = iface.mac?.octets();
-       
+
         let mac_str = format!(
             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            target_mac[0], target_mac[1], target_mac[2],
-            target_mac[3], target_mac[4], target_mac[5]
+            target_mac[0],
+            target_mac[1],
+            target_mac[2],
+            target_mac[3],
+            target_mac[4],
+            target_mac[5]
         );
 
-        let vendor = crate::os::oui::lookup_vendor(&mac_str)
-            .unwrap_or("Unknown");
-
-
+        let vendor = crate::os::oui::lookup_vendor(&mac_str).unwrap_or("Unknown");
 
         // Build Ethernet frame
         let mut frame = vec![0u8; 14 + syn.len()];
@@ -298,22 +293,20 @@ mod win {
         }
 
         // Send full Ethernet frame
-        match cap.sendpacket(&frame[..]){
+        match cap.sendpacket(&frame[..]) {
             Ok(()) => eprintln!("cap.sendpacket OK"),
-            Err(e) => eprintln!("cap.sendpacket ERROR: {:?}",e),
+            Err(e) => eprintln!("cap.sendpacket ERROR: {:?}", e),
         }
-            let stat2 = cap.stats().unwrap().clone();
+        let stat2 = cap.stats().unwrap().clone();
         let start = std::time::Instant::now();
         while start.elapsed().as_millis() < 6000 {
             if let Ok(pkt) = cap.next_packet() {
-                
                 let data = pkt.data;
-                
+
                 if data.len() < 14 {
                     continue;
                 }
                 let ip_slice = &data[14..];
-
 
                 if let Some(meta) = parse_tcp_meta_ipv4(ip_slice) {
                     if meta.src_ip != ip
@@ -337,11 +330,64 @@ mod win {
 
                     ev.push_str(&format!("tcp_syn_mac: {}\n", mac_str));
                     ev.push_str(&format!("tcp_syn_vendor: {}\n", vendor));
+                    let now = std::time::Instant::now();
+                    ev.push_str(&format!("tcp_syn_time: {}\n", now.elapsed().as_micros()));
 
+                    let mut fp =
+                        ServiceFingerprint::from_banner(&ip.to_string(), port, "tcp_syn", ev);
+                    fp.confidence = 40;
+                    return Some(fp);
+                }
+            }
+        }
+        None
+    }
+
+    fn tcp_syn_fingerprint_wan(
+        cap: &mut Capture<Active>,
+        local_ip: Ipv4Addr,
+        target_ip: Ipv4Addr,
+        target_port: u16,
+    ) -> Option<ServiceFingerprint> {
+        // Only filter by IPs; ports we’ll check in userland.
+        let filter = format!("tcp and src host {} and dst host {}", target_ip, local_ip);
+        cap.filter(&filter, true).ok()?;
+        // Kick off a normal TCP connect so the kernel sends a SYN.
+        use std::net::{SocketAddr, SocketAddrV4, TcpStream};
+        let addr = SocketAddr::V4(SocketAddrV4::new(target_ip, target_port));
+        let _ = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500));
+
+        let start = std::time::Instant::now();
+        while start.elapsed().as_millis() < 6000 {
+            if let Ok(pkt) = cap.next_packet() {
+                let data = pkt.data;
+                if data.len() < 14 {
+                    continue;
+                }
+                let ip_slice = &data[14..];
+
+                if let Some(meta) = parse_tcp_meta_ipv4(ip_slice) {
+                    // Now enforce ports in userland.
+                    if meta.src_ip != target_ip || meta.dst_ip != local_ip {
+                        continue;
+                    }
+                    if meta.src_port != target_port {
+                        continue;
+                    }
+
+                    let mut ev = String::new();
+                    ev.push_str(&format!("tcp_syn_ttl: {}\n", meta.ttl));
+                    ev.push_str(&format!("tcp_syn_window: {}\n", meta.window));
+                    if let Some(mss) = meta.mss {
+                        ev.push_str(&format!("tcp_syn_mss: {}\n", mss));
+                    }
+                    ev.push_str(&format!("tcp_syn_df: {}\n", meta.df));
+                    let now = std::time::Instant::now();
+                    ev.push_str(&format!("tcp_syn_time: {}\n", now.elapsed().as_micros()));
 
                     let mut fp = ServiceFingerprint::from_banner(
-                        &ip.to_string(),
-                        port,
+                        &target_ip.to_string(),
+                        target_port,
                         "tcp_syn",
                         ev,
                     );
@@ -352,82 +398,13 @@ mod win {
         }
         None
     }
-
-
-    fn tcp_syn_fingerprint_wan(
-    cap: &mut Capture<Active>,
-    local_ip: Ipv4Addr,
-    target_ip: Ipv4Addr,
-    target_port: u16,
-) -> Option<ServiceFingerprint> {
-    // Only filter by IPs; ports we’ll check in userland.
-    let filter = format!(
-        "tcp and src host {} and dst host {}",
-        target_ip, local_ip
-    );
-    cap.filter(&filter, true).ok()?;
-    // Kick off a normal TCP connect so the kernel sends a SYN.
-    use std::net::{TcpStream, SocketAddr, SocketAddrV4};
-    let addr = SocketAddr::V4(SocketAddrV4::new(target_ip, target_port));
-    let _ = TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500));
-
-    let start = std::time::Instant::now();
-    while start.elapsed().as_millis() < 6000 {
-        if let Ok(pkt) = cap.next_packet() {
-            let data = pkt.data;
-            if data.len() < 14 {
-                continue;
-            }
-            let ip_slice = &data[14..];
-
-            if let Some(meta) = parse_tcp_meta_ipv4(ip_slice) {
-                // Now enforce ports in userland.
-                if meta.src_ip != target_ip || meta.dst_ip != local_ip {
-                    continue;
-                }
-                if meta.src_port != target_port {
-                    continue;
-                }
-
-                let mut ev = String::new();
-                ev.push_str(&format!("tcp_syn_ttl: {}\n", meta.ttl));
-                ev.push_str(&format!("tcp_syn_window: {}\n", meta.window));
-                if let Some(mss) = meta.mss {
-                    ev.push_str(&format!("tcp_syn_mss: {}\n", mss));
-                }
-                ev.push_str(&format!("tcp_syn_df: {}\n", meta.df));
-
-                let mut fp = ServiceFingerprint::from_banner(
-                    &target_ip.to_string(),
-                    target_port,
-                    "tcp_syn",
-                    ev,
-                );
-                fp.confidence = 40;
-                return Some(fp);
-            }
-        }
-    }
-    None
 }
-
-}
-
-
-
-
-
 
 #[cfg(all(feature = "syn_fingerprint"))]
 use win::tcp_syn_fingerprint;
 
-
-
-
-
-// Fallback stub 
-#[cfg(not(feature = "syn_fingerprint"))] 
-pub async fn tcp_syn_fingerprint(_ip: &str, _port: u16) -> Option<ServiceFingerprint> { 
-    None 
+// Fallback stub
+#[cfg(not(feature = "syn_fingerprint"))]
+pub async fn tcp_syn_fingerprint(_ip: &str, _port: u16) -> Option<ServiceFingerprint> {
+    None
 }
-
