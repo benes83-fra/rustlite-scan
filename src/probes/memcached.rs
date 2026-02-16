@@ -1,8 +1,8 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
 
 pub struct MemcachedProbe;
 
@@ -27,7 +27,10 @@ impl Probe for MemcachedProbe {
         };
 
         // Send "version\r\n"
-        if timeout(timeout_dur, stream.write_all(b"version\r\n")).await.is_err() {
+        if timeout(timeout_dur, stream.write_all(b"version\r\n"))
+            .await
+            .is_err()
+        {
             push_line(&mut evidence, "memcached", "send_error");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "memcached", evidence);
             fp.confidence = confidence;
@@ -63,14 +66,26 @@ impl Probe for MemcachedProbe {
         Some(fp)
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
-            ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000),
-        ).await
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![11211] }
-    fn name(&self) -> &'static str { "memcached" }
+    fn ports(&self) -> Vec<u16> {
+        vec![11211]
+    }
+    fn name(&self) -> &'static str {
+        "memcached"
+    }
 }

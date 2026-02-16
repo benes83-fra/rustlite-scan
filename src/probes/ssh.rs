@@ -1,11 +1,8 @@
-use super::{Probe,BannerFields,BannerParser,format_evidence}    ;
+use super::{format_evidence, BannerFields, BannerParser, Probe};
 use crate::{probes::ProbeContext, service::ServiceFingerprint};
 use async_trait::async_trait;
-use tokio::io::AsyncReadExt;
 use std::time::Duration;
-
-
-
+use tokio::io::AsyncReadExt;
 
 pub struct SshBannerParser;
 
@@ -37,14 +34,20 @@ impl BannerParser for SshBannerParser {
     }
 }
 
-
 pub struct SshProbe;
 
 #[async_trait]
 impl Probe for SshProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
@@ -65,7 +68,8 @@ impl Probe for SshProbe {
         let mut stream = conn;
         let mut buf = [0u8; 256];
 
-        let n = match tokio::time::timeout(Duration::from_millis(300), stream.read(&mut buf)).await {
+        let n = match tokio::time::timeout(Duration::from_millis(300), stream.read(&mut buf)).await
+        {
             Ok(Ok(n)) => n,   // read succeeded, n bytes
             _ => return None, // timeout or read error
         };
@@ -74,12 +78,8 @@ impl Probe for SshProbe {
             return None;
         }
 
-       
         let banner = String::from_utf8_lossy(&buf[..n]).to_string();
-        
 
-        
-        
         let fields = SshBannerParser::parse(&banner);
         let evidence = format_evidence("ssh", fields);
 
@@ -95,7 +95,6 @@ impl Probe for SshProbe {
             confidence: 50,
             first_seen: chrono::Utc::now(),
         })
-
     }
 
     fn ports(&self) -> Vec<u16> {
@@ -105,6 +104,3 @@ impl Probe for SshProbe {
         "ssh"
     }
 }
-
-
-

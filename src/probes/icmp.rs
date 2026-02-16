@@ -1,7 +1,7 @@
 use std::net::IpAddr;
+use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
-use std::time::Duration;
 
 /// Cross-platform system ping helper with IPv6 awareness.
 /// Returns true if a reply is detected.

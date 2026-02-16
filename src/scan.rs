@@ -1,12 +1,12 @@
 use crate::cli::Cli;
 use crate::netutils::{expand_targets, parse_ports};
+use crate::os::os_fingerprint::infer_os;
 use crate::probes::udp::UdpProbeStats;
-use crate::probes::{ProbeContext, default_probes};
+use crate::probes::{default_probes, ProbeContext};
 use crate::probes::{icmp_ping_addr, tcp_probe, udp_probe};
 use crate::service::ServiceFingerprint;
 use crate::types::{HostResult, PortResult, UdpMetrics};
 use crate::utils::RateLimiter;
-use crate::os::os_fingerprint::infer_os;
 use anyhow::Context;
 use anyhow::Result;
 use cidr::IpCidr;
@@ -26,14 +26,12 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Semaphore;
-use std::time::Duration;
-
-
 
 pub type MetricsWriter = Arc<TokioMutex<std::io::BufWriter<std::fs::File>>>;
 
@@ -843,11 +841,21 @@ pub async fn scan_host(
                 for probe in probes.iter() {
                     let target_ports = probe.ports();
                     if !target_ports.is_empty() && !target_ports.contains(&port) {
-                         tracing::debug!("Running {} on non-preferred port {} (preferred: {:?})", probe.name(), port, probe.ports());
-                         println!("Skipping probe {} for port {} as it's not in preferred ports {:?}", probe.name(), port, probe.ports());
+                        tracing::debug!(
+                            "Running {} on non-preferred port {} (preferred: {:?})",
+                            probe.name(),
+                            port,
+                            probe.ports()
+                        );
+                        println!(
+                            "Skipping probe {} for port {} as it's not in preferred ports {:?}",
+                            probe.name(),
+                            port,
+                            probe.ports()
+                        );
                         continue;
                     }
-                  
+
                     // clone what we need into the spawned task (clone Arcs here)
                     let probe = probe.clone();
                     let ip_clone = ip.clone();
@@ -861,7 +869,7 @@ pub async fn scan_host(
                     let host_cooldown_ms = host_cooldown_ms;
                     let value = cli.clone();
                     probe_tasks.push(tokio::spawn(async move {
-                        let value=value.clone();
+                        let value = value.clone();
                         // Acquire a permit inside the task (moved into the task)
                         let _permit = sem_clone.acquire_owned().await.unwrap();
 
@@ -883,14 +891,16 @@ pub async fn scan_host(
                             // mutex guard dropped here when `map` goes out of scope
                         }
                         // Run the probe with a timeout
-                        
-                        let probe_params = value.probe_params.clone(); 
+
+                        let probe_params = value.probe_params.clone();
                         let timeout = probe_timeout.clone();
-                        let probe_fut: Pin<Box<dyn Future<Output = Option<ServiceFingerprint>> + Send>> = {
+                        let probe_fut: Pin<
+                            Box<dyn Future<Output = Option<ServiceFingerprint>> + Send>,
+                        > = {
                             // capture by clone/owned values inside the async block
                             let ip = ip_clone.clone();
-                            
-                           // clone so we don't move cli
+
+                            // clone so we don't move cli
                             let probe = probe.clone(); // if Probe is clonable; otherwise adjust ownership
 
                             Box::pin(async move {
@@ -913,12 +923,19 @@ pub async fn scan_host(
                             })
                         };
 
-                        let res = tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut).await;
-
+                        let res =
+                            tokio::time::timeout(Duration::from_millis(probe_timeout), probe_fut)
+                                .await;
 
                         match res {
                             Ok(Some(fp)) => {
-                                tracing::debug!("probe {} returned fingerprint for {}:{} -> {:?}", probe.name(), ip_clone, port, fp);
+                                tracing::debug!(
+                                    "probe {} returned fingerprint for {}:{} -> {:?}",
+                                    probe.name(),
+                                    ip_clone,
+                                    port,
+                                    fp
+                                );
                                 // deterministic sampling: 1 in metrics_sample
                                 let emit = if metrics_sample <= 1 {
                                     true
@@ -939,32 +956,41 @@ pub async fn scan_host(
                                 Some(fp)
                             }
                             Ok(None) => {
-                                tracing::debug!("probe {} returned None for {}:{}", probe.name(), ip_clone, port);
+                                tracing::debug!(
+                                    "probe {} returned None for {}:{}",
+                                    probe.name(),
+                                    ip_clone,
+                                    port
+                                );
                                 None
                             }
                             Err(_) => {
-                                tracing::debug!("probe {} timed out for {}:{}", probe.name(), ip_clone, port);
+                                tracing::debug!(
+                                    "probe {} timed out for {}:{}",
+                                    probe.name(),
+                                    ip_clone,
+                                    port
+                                );
                                 None
                             }
                         }
-                        
                     }));
                 }
             }
 
             // Collect probe results (we ignore them here, but you could attach to HostResult)
-           while let Some(join_res) = probe_tasks.next().await {
+            while let Some(join_res) = probe_tasks.next().await {
                 match join_res {
                     Ok(Some(fp)) => fingerprints.push(fp),
                     Ok(None) => { /* nothing to do */ }
                     Err(e) => tracing::warn!("probe task panicked: {:?}", e),
                 }
-}
+            }
         }
     }
     // --- End probe invocation block ---
 
-        // --- End probe invocation block ---
+    // --- End probe invocation block ---
 
     let mut fingerprints = crate::service::consolidate_by_port(fingerprints);
 
@@ -977,7 +1003,6 @@ pub async fn scan_host(
     }
 
     pb.finish_with_message("Scan complete");
-
 
     // Build limiter info for diagnostics
     let host_lim_info = host_limiter.as_ref().map(|hl| crate::types::LimiterInfo {

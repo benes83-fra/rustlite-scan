@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cidr::{Ipv4Cidr,Ipv6Cidr};
+use cidr::{Ipv4Cidr, Ipv6Cidr};
 use std::net::{SocketAddr, ToSocketAddrs};
 
 pub fn parse_ports(spec: &str) -> Result<Vec<u16>> {
@@ -20,10 +20,6 @@ pub fn parse_ports(spec: &str) -> Result<Vec<u16>> {
     ports.dedup();
     Ok(ports)
 }
-
-
-
-
 
 pub fn expand_targets(target: &str) -> Result<Vec<String>> {
     if target.contains('/') {

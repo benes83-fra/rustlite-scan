@@ -1,66 +1,57 @@
-    use pnet_packet::ip::IpNextHeaderProtocols;
-    use pnet_packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
-    use pnet_packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket};
-    use std::net::Ipv4Addr;
-    use pnet_packet::Packet;
-    
+use pnet_packet::ip::IpNextHeaderProtocols;
+use pnet_packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
+use pnet_packet::tcp::{MutableTcpPacket, TcpFlags, TcpPacket};
+use pnet_packet::Packet;
+use std::net::Ipv4Addr;
 
+#[derive(Debug)]
+pub struct TcpMeta {
+    pub ttl: u8,
+    pub window: u32,
+    pub mss: Option<u16>,
+    pub df: bool,
 
-    
+    pub ts: bool,
+    pub ws: Option<u8>,
+    pub sackok: bool,
+    pub ecn: bool,
 
-    #[derive(Debug)]
-    pub struct TcpMeta {
-        pub ttl: u8,
-        pub window: u32,
-        pub mss: Option<u16>,
-        pub df: bool,
+    pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_port: u16,
+}
 
-        pub ts: bool,
-        pub ws: Option<u8>,
-        pub sackok: bool,
-        pub ecn: bool,
+pub fn build_syn_packet(
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
+    src_port: u16,
+    dst_port: u16,
+) -> Vec<u8> {
+    let mut buf = vec![0u8; 40]; // 20 IP + 20 TCP
+    {
+        let (ip_buf, tcp_buf) = buf.split_at_mut(20);
+        let mut ip = MutableIpv4Packet::new(ip_buf).unwrap();
+        ip.set_version(4);
+        ip.set_header_length(5);
+        ip.set_total_length(40);
+        ip.set_ttl(64);
+        ip.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
+        ip.set_source(src_ip);
+        ip.set_destination(dst_ip);
+        // checksum left zero; most stacks accept it
 
-        pub src_ip: Ipv4Addr,
-        pub dst_ip: Ipv4Addr,
-        pub src_port: u16,
-        pub dst_port: u16,
+        let mut tcp = MutableTcpPacket::new(tcp_buf).unwrap();
+        tcp.set_source(src_port);
+        tcp.set_destination(dst_port);
+        tcp.set_data_offset(5);
+        tcp.set_flags(TcpFlags::SYN);
+        tcp.set_window(64240);
+        // checksum left zero; acceptable for our purpose
     }
+    buf
+}
 
-
-    
-
-
-    pub fn build_syn_packet(
-        src_ip: Ipv4Addr,
-        dst_ip: Ipv4Addr,
-        src_port: u16,
-        dst_port: u16,
-    ) -> Vec<u8> {
-        let mut buf = vec![0u8; 40]; // 20 IP + 20 TCP
-        {
-            let (ip_buf, tcp_buf) = buf.split_at_mut(20);
-            let mut ip = MutableIpv4Packet::new(ip_buf).unwrap();
-            ip.set_version(4);
-            ip.set_header_length(5);
-            ip.set_total_length(40);
-            ip.set_ttl(64);
-            ip.set_next_level_protocol(IpNextHeaderProtocols::Tcp);
-            ip.set_source(src_ip);
-            ip.set_destination(dst_ip);
-            // checksum left zero; most stacks accept it
-
-            let mut tcp = MutableTcpPacket::new(tcp_buf).unwrap();
-            tcp.set_source(src_port);
-            tcp.set_destination(dst_port);
-            tcp.set_data_offset(5);
-            tcp.set_flags(TcpFlags::SYN);
-            tcp.set_window(64240);
-            // checksum left zero; acceptable for our purpose
-        }
-        buf
-    }
-
- 
 pub fn parse_tcp_meta_ipv4(ip_slice: &[u8]) -> Option<TcpMeta> {
     use pnet::packet::ipv4::Ipv4Packet;
     use pnet::packet::tcp::TcpPacket;
@@ -115,28 +106,35 @@ pub fn parse_tcp_meta_ipv4(ip_slice: &[u8]) -> Option<TcpMeta> {
 
         match kind {
             0 => break, // End of options
-            1 => { i += 1; continue; } // NOP
+            1 => {
+                i += 1;
+                continue;
+            } // NOP
 
-            2 => { // MSS
+            2 => {
+                // MSS
                 if i + 4 <= opts.len() {
-                    mss = Some(u16::from_be_bytes([opts[i+2], opts[i+3]]));
+                    mss = Some(u16::from_be_bytes([opts[i + 2], opts[i + 3]]));
                 }
                 i += 4;
             }
 
-            3 => { // Window Scale
+            3 => {
+                // Window Scale
                 if i + 3 <= opts.len() {
-                    ws = Some(opts[i+2]);
+                    ws = Some(opts[i + 2]);
                 }
                 i += 3;
             }
 
-            4 => { // SACK Permitted
+            4 => {
+                // SACK Permitted
                 sackok = true;
                 i += 2;
             }
 
-            8 => { // Timestamps
+            8 => {
+                // Timestamps
                 if i + 10 <= opts.len() {
                     ts = true;
                 }
@@ -146,8 +144,10 @@ pub fn parse_tcp_meta_ipv4(ip_slice: &[u8]) -> Option<TcpMeta> {
             _ => {
                 // Unknown option → skip length
                 if i + 2 <= opts.len() {
-                    let len = opts[i+1] as usize;
-                    if len < 2 { break; }
+                    let len = opts[i + 1] as usize;
+                    if len < 2 {
+                        break;
+                    }
                     i += len;
                 } else {
                     break;
@@ -171,7 +171,3 @@ pub fn parse_tcp_meta_ipv4(ip_slice: &[u8]) -> Option<TcpMeta> {
         dst_port,
     })
 }
-
-
-
-

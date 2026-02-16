@@ -1,7 +1,7 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
 
 pub struct SsdpProbe;
 
@@ -90,14 +90,26 @@ impl Probe for SsdpProbe {
         Some(fp)
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
-            ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000),
-        ).await
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![1900] }
-    fn name(&self) -> &'static str { "ssdp" }
+    fn ports(&self) -> Vec<u16> {
+        vec![1900]
+    }
+    fn name(&self) -> &'static str {
+        "ssdp"
+    }
 }

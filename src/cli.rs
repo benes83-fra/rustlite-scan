@@ -1,7 +1,10 @@
 use clap::{ArgAction, Parser};
 
-#[derive(Parser, Debug,Clone,Default)]
-#[command(name = "rustlite-scan", about = "Fast async port scanner (TCP/UDP) in Rust")]
+#[derive(Parser, Debug, Clone, Default)]
+#[command(
+    name = "rustlite-scan",
+    about = "Fast async port scanner (TCP/UDP) in Rust"
+)]
 pub struct Cli {
     #[arg(short, long)]
     pub target: String,
@@ -34,7 +37,7 @@ pub struct Cli {
     // NEW: token bucket burst capacity (how many can be sent at once).
     #[arg(long, default_value_t = 50)]
     pub udp_burst: u64,
-    
+
     /// Per-host UDP packets per second (0 = disabled)
     #[arg(long, default_value_t = 0)]
     pub udp_rate_host: u64,
@@ -57,14 +60,14 @@ pub struct Cli {
 
     #[arg(long, default_value_t = 1000)]
     pub ping_timeout_ms: u64,
-        /// Write full JSON output to file (path)
+    /// Write full JSON output to file (path)
     #[arg(long, value_name = "FILE", default_value_t = String::new())]
     pub json_out: String,
 
     /// Write CSV output to file (path)
     #[arg(long, value_name = "FILE", default_value_t = String::new())]
     pub csv_out: String,
-        /// Force override safety checks (use with care)
+    /// Force override safety checks (use with care)
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force: bool,
 
@@ -78,7 +81,7 @@ pub struct Cli {
     /// Print planned limiter settings per host and exit (no network activity)
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub dry_run: bool,
-        /// Write per-probe metrics as JSON Lines to this file (append). Optional.
+    /// Write per-probe metrics as JSON Lines to this file (append). Optional.
     #[arg(long, value_name = "FILE", default_value = "")]
     pub metrics_out: String,
 
@@ -92,11 +95,9 @@ pub struct Cli {
     pub metrics_sample: u64,
     pub tcp_connect_timeout_ms: i32, // 1 = emit all, 10 = 1/10
 
-      /// Repeated key=value probe parameters. Use multiple times: --probe-param foo=bar --probe-param timeout_ms=2000
+    /// Repeated key=value probe parameters. Use multiple times: --probe-param foo=bar --probe-param timeout_ms=2000
     #[arg(long = "probe-param", action = ArgAction::Append, value_name = "KEY=VALUE")]
     pub probe_params: Vec<String>,
-
-
 }
 
 impl Cli {

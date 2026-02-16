@@ -1,14 +1,13 @@
 use crate::types::PortResult;
-use tokio::net::UdpSocket;
-use tokio::time::{timeout, sleep, Duration};
-use trust_dns_proto::op::Message;
-use rand::Rng;
-use trust_dns_proto::serialize::binary::BinDecodable;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::sync::Arc;
 use crate::utils::RateLimiter;
 use chrono::DateTime;
-
+use rand::Rng;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::time::{sleep, timeout, Duration};
+use trust_dns_proto::op::Message;
+use trust_dns_proto::serialize::binary::BinDecodable;
 
 #[derive(Debug, Clone, Default)]
 pub struct UdpProbeStats {
@@ -50,9 +49,9 @@ pub async fn udp_probe(
 
     let payload: Vec<u8> = match port {
         53 => vec![
-            0x12,0x34, 0x01,0x00, 0x00,0x01, 0x00,0x00,0x00,0x00,0x00,0x00,
-            0x07,b'e',b'x',b'a',b'm',b'p',b'l',b'e',
-            0x03,b'c',b'o',b'm', 0x00, 0x00,0x01, 0x00,0x01,
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
         ],
         123 => {
             let mut pkt = vec![0u8; 48];
@@ -69,9 +68,45 @@ pub async fn udp_probe(
             match addr_str.to_socket_addrs() {
                 Ok(mut iter) => match iter.next() {
                     Some(sa) => sa,
-                    None => return (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats),
+                    None => {
+                        return (
+                            PortResult {
+                                port,
+                                protocol: "udp",
+                                state: "unknown",
+                                banner: None,
+                                ttl: None,
+                                window_size: None,
+                                mss: None,
+                                df: None,
+                                ts: None,
+                                ws: None,
+                                sackok: None,
+                                ecn: None,
+                            },
+                            stats,
+                        )
+                    }
                 },
-                Err(_) => return (PortResult { port, protocol: "udp", state: "unknown", banner: None, ttl: None, window_size :None, mss: None, df: None, ts: None, ws: None, sackok: None, ecn: None }, stats),
+                Err(_) => {
+                    return (
+                        PortResult {
+                            port,
+                            protocol: "udp",
+                            state: "unknown",
+                            banner: None,
+                            ttl: None,
+                            window_size: None,
+                            mss: None,
+                            df: None,
+                            ts: None,
+                            ws: None,
+                            sackok: None,
+                            ecn: None,
+                        },
+                        stats,
+                    )
+                }
             }
         }
     };
@@ -90,8 +125,12 @@ pub async fn udp_probe(
             }
 
             // Acquire host limiter first (fairness), then global limiter
-            if let Some(hl) = &host_limiter { hl.acquire().await; }
-            if let Some(gl) = &global_limiter { gl.acquire().await; }
+            if let Some(hl) = &host_limiter {
+                hl.acquire().await;
+            }
+            if let Some(gl) = &global_limiter {
+                gl.acquire().await;
+            }
 
             let _ = sock.send(&payload).await;
             stats.packets_sent += 1;
@@ -110,31 +149,115 @@ pub async fn udp_probe(
                         stats.packets_received += 1;
                         if port == 53 {
                             if let Ok(msg) = Message::from_bytes(&buf[..n]) {
-                                let answers: Vec<String> = msg.answers().iter().map(|rr| format!("{}", rr)).collect();
+                                let answers: Vec<String> =
+                                    msg.answers().iter().map(|rr| format!("{}", rr)).collect();
                                 let banner = if answers.is_empty() {
                                     Some(format!("DNS response {} bytes", n))
                                 } else {
                                     Some(answers.join(", "))
                                 };
-                                return (PortResult { port, protocol: "udp", state: "open", banner ,ttl: None, window_size :None, mss: None, df: None, ts: None, ws: None, sackok: None, ecn: None}, stats);
+                                return (
+                                    PortResult {
+                                        port,
+                                        protocol: "udp",
+                                        state: "open",
+                                        banner,
+                                        ttl: None,
+                                        window_size: None,
+                                        mss: None,
+                                        df: None,
+                                        ts: None,
+                                        ws: None,
+                                        sackok: None,
+                                        ecn: None,
+                                    },
+                                    stats,
+                                );
                             } else {
-                                return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes DNS (unparsed)", n)),ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats);
+                                return (
+                                    PortResult {
+                                        port,
+                                        protocol: "udp",
+                                        state: "open",
+                                        banner: Some(format!("{} bytes DNS (unparsed)", n)),
+                                        ttl: None,
+                                        window_size: None,
+                                        mss: None,
+                                        df: None,
+                                        ts: None,
+                                        ws: None,
+                                        sackok: None,
+                                        ecn: None,
+                                    },
+                                    stats,
+                                );
                             }
                         } else if port == 123 && n >= 48 {
-                            let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as u64;
+                            let secs =
+                                u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as u64;
                             let ntp_to_unix = 2_208_988_800u64;
                             let unix_secs = secs.saturating_sub(ntp_to_unix);
                             let naive = DateTime::from_timestamp(unix_secs as i64, 0);
                             let banner = naive
-                                .map(|dt| format!("NTP time: {}", dt.format("%Y-%m-%d %H:%M:%S UTC")))
+                                .map(|dt| {
+                                    format!("NTP time: {}", dt.format("%Y-%m-%d %H:%M:%S UTC"))
+                                })
                                 .or(Some(format!("NTP response {} bytes", n)));
-                            return (PortResult { port, protocol: "udp", state: "open", banner,ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats);
+                            return (
+                                PortResult {
+                                    port,
+                                    protocol: "udp",
+                                    state: "open",
+                                    banner,
+                                    ttl: None,
+                                    window_size: None,
+                                    mss: None,
+                                    df: None,
+                                    ts: None,
+                                    ws: None,
+                                    sackok: None,
+                                    ecn: None,
+                                },
+                                stats,
+                            );
                         } else {
-                            return (PortResult { port, protocol: "udp", state: "open", banner: Some(format!("{} bytes response", n)),ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None }, stats);
+                            return (
+                                PortResult {
+                                    port,
+                                    protocol: "udp",
+                                    state: "open",
+                                    banner: Some(format!("{} bytes response", n)),
+                                    ttl: None,
+                                    window_size: None,
+                                    mss: None,
+                                    df: None,
+                                    ts: None,
+                                    ws: None,
+                                    sackok: None,
+                                    ecn: None,
+                                },
+                                stats,
+                            );
                         }
                     }
                     Ok(Err(_)) => {
-                        return (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats);
+                        return (
+                            PortResult {
+                                port,
+                                protocol: "udp",
+                                state: "unknown",
+                                banner: None,
+                                ttl: None,
+                                window_size: None,
+                                mss: None,
+                                df: None,
+                                ts: None,
+                                ws: None,
+                                sackok: None,
+                                ecn: None,
+                            },
+                            stats,
+                        );
                     }
                     Err(_) => {
                         stats.timeouts += 1;
@@ -154,20 +277,72 @@ pub async fn udp_probe(
                                 tokio::time::sleep(Duration::from_millis(jitter2)).await;
                             }
 
-                            if let Some(hl) = &host_limiter { hl.acquire().await; }
-                            if let Some(gl) = &global_limiter { gl.acquire().await; }
+                            if let Some(hl) = &host_limiter {
+                                hl.acquire().await;
+                            }
+                            if let Some(gl) = &global_limiter {
+                                gl.acquire().await;
+                            }
                             let _ = sock.send(&payload).await;
                             stats.packets_sent += 1;
                             continue;
                         } else {
-                            return (PortResult { port, protocol: "udp", state: "open|filtered", banner: None ,ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats);
+                            return (
+                                PortResult {
+                                    port,
+                                    protocol: "udp",
+                                    state: "open|filtered",
+                                    banner: None,
+                                    ttl: None,
+                                    window_size: None,
+                                    mss: None,
+                                    df: None,
+                                    ts: None,
+                                    ws: None,
+                                    sackok: None,
+                                    ecn: None,
+                                },
+                                stats,
+                            );
                         }
                     }
                 }
             }
 
-            (PortResult { port, protocol: "udp", state: "unknown", banner: None, ttl: None, window_size :None, mss: None, df: None , ts: None, ws: None, sackok: None, ecn: None}, stats)
+            (
+                PortResult {
+                    port,
+                    protocol: "udp",
+                    state: "unknown",
+                    banner: None,
+                    ttl: None,
+                    window_size: None,
+                    mss: None,
+                    df: None,
+                    ts: None,
+                    ws: None,
+                    sackok: None,
+                    ecn: None,
+                },
+                stats,
+            )
         }
-        Err(_) => (PortResult { port, protocol: "udp", state: "unknown", banner: None ,ttl: None, window_size :None, mss: None, df: None, ts: None, ws: None, sackok: None, ecn: None}, stats),
+        Err(_) => (
+            PortResult {
+                port,
+                protocol: "udp",
+                state: "unknown",
+                banner: None,
+                ttl: None,
+                window_size: None,
+                mss: None,
+                df: None,
+                ts: None,
+                ws: None,
+                sackok: None,
+                ecn: None,
+            },
+            stats,
+        ),
     }
 }

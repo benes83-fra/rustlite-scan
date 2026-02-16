@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-use tokio::time::{ Duration};
+use tokio::time::Duration;
 
 pub struct RateLimiter {
     sem: Arc<Semaphore>,
@@ -20,7 +20,12 @@ impl RateLimiter {
     pub fn new_with_tick(pps: u64, burst: u64, tick_ms: u64) -> Arc<Self> {
         let burst = burst.max(1);
         let sem = Arc::new(Semaphore::new(burst as usize));
-        let rl = Arc::new(Self { sem: sem.clone(), pps, burst, tick_ms: tick_ms.max(1) });
+        let rl = Arc::new(Self {
+            sem: sem.clone(),
+            pps,
+            burst,
+            tick_ms: tick_ms.max(1),
+        });
 
         if pps > 0 {
             let rl_clone = rl.clone();
@@ -41,8 +46,7 @@ impl RateLimiter {
                     }
                 }
             });
-        }
-         else {
+        } else {
             // If pps == 0, ensure burst permits are available
             sem.add_permits((burst as usize).saturating_sub(sem.available_permits()));
         }
@@ -52,8 +56,14 @@ impl RateLimiter {
 
     /// Acquire a permit (awaits if none available). If pps == 0 this is a no-op.
     pub async fn acquire(&self) {
-        if self.pps == 0 { return; }
-        let _permit = self.sem.acquire().await.expect("rate limiter semaphore closed");
+        if self.pps == 0 {
+            return;
+        }
+        let _permit = self
+            .sem
+            .acquire()
+            .await
+            .expect("rate limiter semaphore closed");
     }
 
     /// Packets-per-second configured for this limiter
@@ -65,7 +75,7 @@ impl RateLimiter {
     pub fn burst(&self) -> u64 {
         self.burst
     }
-   
+
     /// Perform a single refill step (useful for deterministic tests).
     /// This adds the same number of permits that the background task would add for one tick.
     pub fn _refill_once(&self) {
@@ -79,8 +89,5 @@ impl RateLimiter {
         if to_add > 0 {
             self.sem.add_permits(to_add);
         }
+    }
 }
-
-}
-
-

@@ -1,11 +1,11 @@
-use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration, sleep};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use crate::probes::ProbeContext;
-use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::helper::push_line;
+use crate::probes::ProbeContext;
+use crate::service::ServiceFingerprint;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use tokio::net::UdpSocket;
+use tokio::time::{sleep, timeout, Duration};
 
 /// SNMP probe that requests sysDescr.0 and sysObjectID.0 via SNMPv2c community "public"
 pub struct SnmpProbe;
@@ -67,8 +67,16 @@ impl SnmpProbe {
         // request-id INTEGER
         pdu_body.push(0x02);
         let req_bytes = request_id.to_be_bytes();
-        let req_trim = req_bytes.iter().skip_while(|b| **b == 0).cloned().collect::<Vec<u8>>();
-        let req_enc = if req_trim.is_empty() { vec![0u8] } else { req_trim };
+        let req_trim = req_bytes
+            .iter()
+            .skip_while(|b| **b == 0)
+            .cloned()
+            .collect::<Vec<u8>>();
+        let req_enc = if req_trim.is_empty() {
+            vec![0u8]
+        } else {
+            req_trim
+        };
         pdu_body.extend_from_slice(&Self::encode_len(req_enc.len()));
         pdu_body.extend_from_slice(&req_enc);
 
@@ -134,8 +142,16 @@ impl SnmpProbe {
         let mut pdu_body = Vec::new();
         pdu_body.push(0x02);
         let req_bytes = request_id.to_be_bytes();
-        let req_trim = req_bytes.iter().skip_while(|b| **b == 0).cloned().collect::<Vec<u8>>();
-        let req_enc = if req_trim.is_empty() { vec![0u8] } else { req_trim };
+        let req_trim = req_bytes
+            .iter()
+            .skip_while(|b| **b == 0)
+            .cloned()
+            .collect::<Vec<u8>>();
+        let req_enc = if req_trim.is_empty() {
+            vec![0u8]
+        } else {
+            req_trim
+        };
         pdu_body.extend_from_slice(&Self::encode_len(req_enc.len()));
         pdu_body.extend_from_slice(&req_enc);
 
@@ -164,7 +180,12 @@ impl SnmpProbe {
     }
 
     /// Build a minimal GETBULK (A5) using the same varbinds; non_repeaters and max_repetitions are encoded as integers.
-    fn build_snmp_getbulk(community: &str, request_id: i32, non_repeaters: i32, max_repetitions: i32) -> Vec<u8> {
+    fn build_snmp_getbulk(
+        community: &str,
+        request_id: i32,
+        non_repeaters: i32,
+        max_repetitions: i32,
+    ) -> Vec<u8> {
         // reuse the same OIDs as before (start points)
         let oid_sysdescr: &[u8] = &[0x2B, 6, 1, 2, 1, 1, 1, 0];
         let oid_sysobject: &[u8] = &[0x2B, 6, 1, 2, 1, 1, 2, 0];
@@ -198,8 +219,16 @@ impl SnmpProbe {
         // helper to encode INTEGER TLV (small)
         fn encode_int_tlv(v: i32) -> Vec<u8> {
             let bytes = v.to_be_bytes();
-            let trimmed = bytes.iter().skip_while(|b| **b == 0).cloned().collect::<Vec<u8>>();
-            let enc = if trimmed.is_empty() { vec![0u8] } else { trimmed };
+            let trimmed = bytes
+                .iter()
+                .skip_while(|b| **b == 0)
+                .cloned()
+                .collect::<Vec<u8>>();
+            let enc = if trimmed.is_empty() {
+                vec![0u8]
+            } else {
+                trimmed
+            };
             let mut out = vec![0x02];
             out.extend_from_slice(&SnmpProbe::encode_len(enc.len()));
             out.extend_from_slice(&enc);
@@ -236,14 +265,18 @@ impl SnmpProbe {
 
     /// Read a BER length at offset `off` (off points to length byte)
     fn read_len(buf: &[u8], off: usize) -> Option<(usize, usize)> {
-        if off >= buf.len() { return None; }
+        if off >= buf.len() {
+            return None;
+        }
         let b = buf[off];
         if b & 0x80 == 0 {
             Some((b as usize, 1))
         } else {
             let n = (b & 0x7f) as usize;
             if n == 1 {
-                if off + 1 >= buf.len() { return None; }
+                if off + 1 >= buf.len() {
+                    return None;
+                }
                 Some((buf[off + 1] as usize, 2))
             } else {
                 None
@@ -261,32 +294,40 @@ impl SnmpProbe {
                 let len_info = SnmpProbe::read_len(slice, i + 1)?;
                 let (len, hdr) = len_info;
                 let content_off = i + 1 + hdr;
-                if content_off + len > slice.len() { break; }
+                if content_off + len > slice.len() {
+                    break;
+                }
 
                 // If this is an OID TLV, check for match
                 if tag == 0x06 {
-                    let content = &slice[content_off .. content_off + len];
+                    let content = &slice[content_off..content_off + len];
                     if content == oid_bytes {
                         // Found OID; look for the next TLV after this OID within the parent slice
-                        let  j = content_off + len;
-                        if j + 1 >= slice.len() { return None; }
+                        let j = content_off + len;
+                        if j + 1 >= slice.len() {
+                            return None;
+                        }
                         let val_tag = slice[j];
                         let val_len_info = SnmpProbe::read_len(slice, j + 1)?;
                         let (val_len, val_hdr) = val_len_info;
                         let val_off = j + 1 + val_hdr;
-                        if val_off + val_len > slice.len() { return None; }
+                        if val_off + val_len > slice.len() {
+                            return None;
+                        }
 
                         match val_tag {
                             0x80 => return Some("noSuchObject".to_string()),
                             0x81 => return Some("noSuchInstance".to_string()),
                             0x82 => return Some("endOfMibView".to_string()),
                             0x04 => {
-                                let val = &slice[val_off .. val_off + val_len];
-                                return std::str::from_utf8(val).map(|s| s.to_string()).ok()
+                                let val = &slice[val_off..val_off + val_len];
+                                return std::str::from_utf8(val)
+                                    .map(|s| s.to_string())
+                                    .ok()
                                     .or_else(|| Some(format!("{:02x?}", val)));
                             }
                             0x02 => {
-                                let val = &slice[val_off .. val_off + val_len];
+                                let val = &slice[val_off..val_off + val_len];
                                 let mut v: i64 = 0;
                                 for &b in val {
                                     v = (v << 8) | (b as i64);
@@ -294,8 +335,10 @@ impl SnmpProbe {
                                 return Some(format!("{}", v));
                             }
                             0x06 => {
-                                let val = &slice[val_off .. val_off + val_len];
-                                if val.is_empty() { return Some(String::new()); }
+                                let val = &slice[val_off..val_off + val_len];
+                                if val.is_empty() {
+                                    return Some(String::new());
+                                }
                                 let mut parts = Vec::new();
                                 let first = val[0];
                                 parts.push((first / 40).to_string());
@@ -314,7 +357,7 @@ impl SnmpProbe {
                                 return Some(parts.join("."));
                             }
                             _ => {
-                                let val = &slice[val_off .. val_off + val_len];
+                                let val = &slice[val_off..val_off + val_len];
                                 return Some(format!("{:02x?}", val));
                             }
                         }
@@ -323,7 +366,9 @@ impl SnmpProbe {
 
                 // descend into constructed TLVs
                 if tag == 0x30 || (tag & 0xE0) == 0xA0 {
-                    if let Some(found) = scan_slice(&slice[content_off .. content_off + len], oid_bytes) {
+                    if let Some(found) =
+                        scan_slice(&slice[content_off..content_off + len], oid_bytes)
+                    {
                         return Some(found);
                     }
                 }
@@ -337,18 +382,44 @@ impl SnmpProbe {
     }
 
     /// Single helper: send a request and wait for a response with retries. Returns received bytes or None.
-    async fn send_and_recv(sock: &UdpSocket, addr: &str, req: &[u8], timeout_ms: u64, attempts: usize) -> Option<Vec<u8>> {
+    async fn send_and_recv(
+        sock: &UdpSocket,
+        addr: &str,
+        req: &[u8],
+        timeout_ms: u64,
+        attempts: usize,
+    ) -> Option<Vec<u8>> {
         for attempt in 1..=attempts {
-            if DEBUG { eprintln!("SNMP send attempt {} -> {} ({} bytes): {:02x?}", attempt, addr, req.len(), req); }
+            if DEBUG {
+                eprintln!(
+                    "SNMP send attempt {} -> {} ({} bytes): {:02x?}",
+                    attempt,
+                    addr,
+                    req.len(),
+                    req
+                );
+            }
             if let Err(e) = sock.send_to(req, addr).await.map_err(|e| e) {
                 eprintln!("SNMP send error: {}", e);
             }
 
             let mut buf = vec![0u8; 8192];
-            match timeout(Duration::from_millis(timeout_ms.max(2000)), sock.recv_from(&mut buf)).await {
+            match timeout(
+                Duration::from_millis(timeout_ms.max(2000)),
+                sock.recv_from(&mut buf),
+            )
+            .await
+            {
                 Ok(Ok((n, peer))) => {
                     buf.truncate(n);
-                    if DEBUG { eprintln!("SNMP recv {} bytes from {}: preview={:02x?}", n, peer, &buf[..std::cmp::min(128, buf.len())]); }
+                    if DEBUG {
+                        eprintln!(
+                            "SNMP recv {} bytes from {}: preview={:02x?}",
+                            n,
+                            peer,
+                            &buf[..std::cmp::min(128, buf.len())]
+                        );
+                    }
                     return Some(buf);
                 }
                 Ok(Err(e)) => {
@@ -356,7 +427,9 @@ impl SnmpProbe {
                     return None;
                 }
                 Err(_) => {
-                    if DEBUG { eprintln!("SNMP recv timeout on attempt {}", attempt); }
+                    if DEBUG {
+                        eprintln!("SNMP recv timeout on attempt {}", attempt);
+                    }
                 }
             }
 
@@ -370,14 +443,25 @@ impl SnmpProbe {
 
 #[async_trait::async_trait]
 impl Probe for SnmpProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
         let addr = format!("{}:{}", ip, port);
-        let bind_addr = if ip.contains(':') { "[::]:0" } else { "0.0.0.0:0" };
+        let bind_addr = if ip.contains(':') {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
 
         let mut rng = StdRng::from_entropy();
         let req_id: i32 = rng.gen_range(1..=0x7fffffff);
@@ -389,8 +473,8 @@ impl Probe for SnmpProbe {
         let mut evidence = String::new();
 
         // targeted extraction for both OIDs
-        let oid_sysdescr: &[u8] = &[0x2B,6,1,2,1,1,1,0];
-        let oid_sysobject: &[u8] = &[0x2B,6,1,2,1,1,2,0];
+        let oid_sysdescr: &[u8] = &[0x2B, 6, 1, 2, 1, 1, 1, 0];
+        let oid_sysobject: &[u8] = &[0x2B, 6, 1, 2, 1, 1, 2, 0];
 
         if let Some(s) = SnmpProbe::extract_varbind_value_for_oid(&resp, oid_sysdescr) {
             push_line(&mut evidence, "SNMP_sysDescr", &s);
@@ -409,7 +493,9 @@ impl Probe for SnmpProbe {
             // GETNEXT
             let req_id_next: i32 = rng.gen_range(1..=0x7fffffff);
             let req_next = SnmpProbe::build_snmp_getnext("public", req_id_next);
-            if let Some(resp2) = SnmpProbe::send_and_recv(&sock, &addr, &req_next, timeout_ms, 2).await {
+            if let Some(resp2) =
+                SnmpProbe::send_and_recv(&sock, &addr, &req_next, timeout_ms, 2).await
+            {
                 // scan for any OID/value pairs by reusing the extractor on common OIDs
                 if let Some(v) = SnmpProbe::extract_varbind_value_for_oid(&resp2, oid_sysdescr) {
                     push_line(&mut evidence, "SNMP_getnext_sysDescr", &v);
@@ -429,7 +515,9 @@ impl Probe for SnmpProbe {
         if need_bulk {
             let req_id_bulk: i32 = rng.gen_range(1..=0x7fffffff);
             let req_bulk = SnmpProbe::build_snmp_getbulk("public", req_id_bulk, 0, 8);
-            if let Some(resp3) = SnmpProbe::send_and_recv(&sock, &addr, &req_bulk, timeout_ms, 2).await {
+            if let Some(resp3) =
+                SnmpProbe::send_and_recv(&sock, &addr, &req_bulk, timeout_ms, 2).await
+            {
                 // try to extract the same OIDs (or record raw if exceptions)
                 if let Some(v) = SnmpProbe::extract_varbind_value_for_oid(&resp3, oid_sysdescr) {
                     push_line(&mut evidence, "SNMP_getbulk_sysDescr", &v);
@@ -442,12 +530,20 @@ impl Probe for SnmpProbe {
 
         if evidence.is_empty() {
             // keep a short raw preview for debugging
-            push_line(&mut evidence, "SNMP_raw", &format!("{:02x?}", &resp[..std::cmp::min(128, resp.len())]));
+            push_line(
+                &mut evidence,
+                "SNMP_raw",
+                &format!("{:02x?}", &resp[..std::cmp::min(128, resp.len())]),
+            );
         }
 
         Some(ServiceFingerprint::from_banner(ip, port, "snmp", evidence))
     }
 
-    fn ports(&self) -> Vec<u16> { vec![161] }
-    fn name(&self) -> &'static str { "snmp" }
+    fn ports(&self) -> Vec<u16> {
+        vec![161]
+    }
+    fn name(&self) -> &'static str {
+        "snmp"
+    }
 }

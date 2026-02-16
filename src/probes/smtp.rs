@@ -1,17 +1,17 @@
 use async_trait::async_trait;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
+use super::Probe;
 use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
-use super::Probe;
 use openssl::ssl::{SslConnector, SslMethod};
 use tokio_openssl::SslStream;
 
-use crate::probes::helper::{connect_with_timeout,push_line};
+use crate::probes::helper::{connect_with_timeout, push_line};
 
-use super::{BannerFields, BannerParser, format_evidence};
+use super::{format_evidence, BannerFields, BannerParser};
 
 pub struct SmtpBannerParser;
 
@@ -46,15 +46,21 @@ pub struct SmtpProbe;
 
 #[async_trait]
 impl Probe for SmtpProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
-
         // TCP connect with timeout
-       let stream = connect_with_timeout(ip, port, timeout_ms).await?;
+        let stream = connect_with_timeout(ip, port, timeout_ms).await?;
 
         // Implicit TLS (SMTPS) on 465
         if port == 465 {
@@ -71,12 +77,11 @@ impl Probe for SmtpProbe {
         let fields = SmtpBannerParser::parse(&banner);
         let mut evidence = format_evidence("smtp", fields);
 
-
         // EHLO (plain)
-         stream.write_all(b"EHLO example.com\r\n").await.ok()?;
+        stream.write_all(b"EHLO example.com\r\n").await.ok()?;
         let ehlo_plain = read_multiline(&mut stream).await.unwrap_or_default();
         push_line(&mut evidence, "EHLO (plain)", ehlo_plain.trim());
-       /* if evidence.contains("STARTTLS") {
+        /* if evidence.contains("STARTTLS") {
             smtp_exchange(&mut stream, &mut evidence, "STARTTLS reply", "STARTTLS\r\n").await;
              // STARTTLS negotiation
             if evidence.contains("220") {
@@ -94,12 +99,13 @@ impl Probe for SmtpProbe {
 
             if starttls_reply.starts_with("220") {
                 let sni = extract_sni_hint(ip, Some(&banner));
-            
+
                 if let Ok(tls_stream) = upgrade_to_tls(stream, sni).await {
-                    return fingerprint_smtp_tls_with_evidence(ip, port, tls_stream, evidence).await;
+                    return fingerprint_smtp_tls_with_evidence(ip, port, tls_stream, evidence)
+                        .await;
                 } else {
-                     // TLS failed, still return what we have
-                     return Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence));
+                    // TLS failed, still return what we have
+                    return Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence));
                 }
             }
         }
@@ -107,17 +113,25 @@ impl Probe for SmtpProbe {
         Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence))
     }
 
-    fn ports(&self) -> Vec<u16> { vec![25, 587, 465] }
-    fn name(&self) -> &'static str { "smtp" }
+    fn ports(&self) -> Vec<u16> {
+        vec![25, 587, 465]
+    }
+    fn name(&self) -> &'static str {
+        "smtp"
+    }
 }
 
 // Upgrade a TcpStream to TLS via OpenSSL (tokio-openssl requires Pin and async connect)
 
-
 async fn upgrade_to_tls(stream: TcpStream, sni: String) -> Result<SslStream<TcpStream>, ()> {
-    let connector = SslConnector::builder(SslMethod::tls()).map_err(|_| ())?.build();
-    let ssl = connector.configure().map_err(|_| ())?
-        .into_ssl(&sni).map_err(|_| ())?;
+    let connector = SslConnector::builder(SslMethod::tls())
+        .map_err(|_| ())?
+        .build();
+    let ssl = connector
+        .configure()
+        .map_err(|_| ())?
+        .into_ssl(&sni)
+        .map_err(|_| ())?;
 
     // Own the TLS stream
     let mut tls = SslStream::new(ssl, stream).map_err(|_| ())?;
@@ -130,11 +144,12 @@ async fn upgrade_to_tls(stream: TcpStream, sni: String) -> Result<SslStream<TcpS
     Ok(tls)
 }
 
-
-
-
 // After TLS upgrade, collect banner (if any) and EHLO (TLS)
-async fn fingerprint_smtp_tls(ip: &str, port: u16, mut tls_stream: SslStream<TcpStream>) -> Option<ServiceFingerprint> {
+async fn fingerprint_smtp_tls(
+    ip: &str,
+    port: u16,
+    mut tls_stream: SslStream<TcpStream>,
+) -> Option<ServiceFingerprint> {
     let mut evidence = String::new();
 
     if let Some(tls_banner) = read_chunk_tls(&mut tls_stream).await {
@@ -142,7 +157,9 @@ async fn fingerprint_smtp_tls(ip: &str, port: u16, mut tls_stream: SslStream<Tcp
     }
 
     tls_stream.write_all(b"EHLO example.com\r\n").await.ok()?;
-    let ehlo_tls = read_multiline_tls(&mut tls_stream).await.unwrap_or_default();
+    let ehlo_tls = read_multiline_tls(&mut tls_stream)
+        .await
+        .unwrap_or_default();
     push_line(&mut evidence, "EHLO (TLS)", ehlo_tls.trim());
 
     Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence))
@@ -160,20 +177,21 @@ async fn fingerprint_smtp_tls_with_evidence(
 
     // Re‑EHLO after STARTTLS
     tls_stream.write_all(b"EHLO example.com\r\n").await.ok()?;
-    let ehlo_tls = read_multiline_tls(&mut tls_stream).await.unwrap_or_default();
+    let ehlo_tls = read_multiline_tls(&mut tls_stream)
+        .await
+        .unwrap_or_default();
     push_line(&mut evidence, "EHLO (TLS)", ehlo_tls.trim());
 
     Some(ServiceFingerprint::from_banner(ip, port, "smtp", evidence))
 }
 
-
-
-
 // Simple chunk readers
 async fn read_chunk(stream: &mut TcpStream) -> Option<String> {
     let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf).await.ok()?;
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
     Some(String::from_utf8_lossy(&buf[..n]).to_string())
 }
 
@@ -182,10 +200,12 @@ async fn read_chunk_tls(stream: &mut SslStream<TcpStream>) -> Option<String> {
     // Use a small timeout to avoid indefinite hang if server doesn’t send a TLS banner
     let n = match tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf)).await {
         Ok(Ok(n)) => n,
-                        _ => return None,
-        };
+        _ => return None,
+    };
 
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
     Some(String::from_utf8_lossy(&buf[..n]).to_string())
 }
 
@@ -195,7 +215,9 @@ async fn read_multiline(stream: &mut TcpStream) -> Option<String> {
     let mut buf = [0u8; 4096];
 
     let n = stream.read(&mut buf).await.ok()?;
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
     out.push_str(&String::from_utf8_lossy(&buf[..n]));
 
     loop {
@@ -203,7 +225,9 @@ async fn read_multiline(stream: &mut TcpStream) -> Option<String> {
         if is_final_reply(last) || !is_multiline_reply(last) {
             break;
         }
-        let more = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf)).await.ok();
+        let more = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf))
+            .await
+            .ok();
         match more {
             Some(Ok(m)) if m > 0 => out.push_str(&String::from_utf8_lossy(&buf[..m])),
             _ => break,
@@ -217,7 +241,9 @@ async fn read_multiline_tls(stream: &mut SslStream<TcpStream>) -> Option<String>
     let mut buf = [0u8; 4096];
 
     let n = stream.read(&mut buf).await.ok()?;
-    if n == 0 { return None; }
+    if n == 0 {
+        return None;
+    }
     out.push_str(&String::from_utf8_lossy(&buf[..n]));
 
     loop {
@@ -225,7 +251,9 @@ async fn read_multiline_tls(stream: &mut SslStream<TcpStream>) -> Option<String>
         if is_final_reply(last) || !is_multiline_reply(last) {
             break;
         }
-        let more = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf)).await.ok();
+        let more = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buf))
+            .await
+            .ok();
         match more {
             Some(Ok(m)) if m > 0 => out.push_str(&String::from_utf8_lossy(&buf[..m])),
             _ => break,
@@ -263,4 +291,3 @@ fn extract_sni_hint(ip: &str, banner_opt: Option<&str>) -> String {
         ip.to_string()
     }
 }
-

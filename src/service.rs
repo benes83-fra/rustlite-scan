@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -7,12 +7,12 @@ pub struct ServiceFingerprint {
     pub host: String,
     pub ip: String,
     pub port: u16,
-    pub protocol: String,         // e.g., "http", "https", "ssh"
-    pub service: Option<String>,  // e.g., "nginx", "OpenSSH"
-    pub version: Option<String>,  // e.g., "1.18.0"
-    pub evidence: Option<String>, // raw banner, headers, cert subject, etc.
+    pub protocol: String,              // e.g., "http", "https", "ssh"
+    pub service: Option<String>,       // e.g., "nginx", "OpenSSH"
+    pub version: Option<String>,       // e.g., "1.18.0"
+    pub evidence: Option<String>,      // raw banner, headers, cert subject, etc.
     pub evidence_type: Option<String>, // "banner", "http_header", "tls_cert"
-    pub confidence: u8,          // 0..=100
+    pub confidence: u8,                // 0..=100
     pub first_seen: DateTime<Utc>,
 }
 
@@ -40,19 +40,30 @@ impl ServiceFingerprint {
         f
     }
 
-    pub fn from_http(ip: &str, port: u16, server_header: Option<String>, status: Option<u16>) -> Self {
+    pub fn from_http(
+        ip: &str,
+        port: u16,
+        server_header: Option<String>,
+        status: Option<u16>,
+    ) -> Self {
         let mut f = Self::new(ip, port, "http");
         f.service = server_header.clone();
         f.evidence = server_header.clone();
         f.evidence_type = Some("http_header".to_string());
         f.confidence = if server_header.is_some() { 70 } else { 40 };
-        if let Some(s) = status { f.evidence = Some(format!("status: {}", s)); }
+        if let Some(s) = status {
+            f.evidence = Some(format!("status: {}", s));
+        }
         f
     }
 
     pub fn from_tls_cert(ip: &str, port: u16, subject: String, sans: Vec<String>) -> Self {
         let mut f = Self::new(ip, port, "tls");
-        let evidence = if sans.is_empty() { subject.clone() } else { format!("{}; SANs: {}", subject, sans.join(",")) };
+        let evidence = if sans.is_empty() {
+            subject.clone()
+        } else {
+            format!("{}; SANs: {}", subject, sans.join(","))
+        };
         f.evidence = Some(evidence);
         f.evidence_type = Some("tls_cert".to_string());
         f.confidence = 75;
@@ -71,8 +82,12 @@ impl ServiceFingerprint {
             }
             // Combine evidence strings (keep short)
             let mut pieces = Vec::new();
-            if let Some(e) = &self.evidence { pieces.push(e.clone()); }
-            if let Some(e) = &other.evidence { pieces.push(e.clone()); }
+            if let Some(e) = &self.evidence {
+                pieces.push(e.clone());
+            }
+            if let Some(e) = &other.evidence {
+                pieces.push(e.clone());
+            }
             self.evidence = Some(pieces.join(" | "));
             // Increase confidence conservatively
             let new_conf = (self.confidence as u16 + other.confidence as u16).saturating_sub(20);
@@ -83,7 +98,9 @@ impl ServiceFingerprint {
 /// Combine multiple fingerprints for the same host:port into a single fingerprint.
 /// Strategy: start from the highest-confidence fingerprint, merge others, and normalize.
 pub fn _consolidate_fingerprints(mut fps: Vec<ServiceFingerprint>) -> Option<ServiceFingerprint> {
-    if fps.is_empty() { return None; }
+    if fps.is_empty() {
+        return None;
+    }
     // sort by confidence desc
     fps.sort_by_key(|f| std::cmp::Reverse(f.confidence));
     let mut base = fps.remove(0);
@@ -91,12 +108,11 @@ pub fn _consolidate_fingerprints(mut fps: Vec<ServiceFingerprint>) -> Option<Ser
         base.merge(f);
     }
     // normalize confidence: clamp 10..100
-    if base.confidence < 10 { base.confidence = 10; }
+    if base.confidence < 10 {
+        base.confidence = 10;
+    }
     Some(base)
 }
-
-
-
 
 /// Consolidate multiple fingerprints per port into one per port.
 /// Keeps highest-confidence fingerprint as base and merges others.
@@ -115,9 +131,10 @@ pub fn consolidate_by_port(fps: Vec<ServiceFingerprint>) -> Vec<ServiceFingerpri
             base.merge(other);
         }
         // normalize confidence floor
-        if base.confidence < 10 { base.confidence = 10; }
+        if base.confidence < 10 {
+            base.confidence = 10;
+        }
         consolidated.push(base);
     }
     consolidated
 }
-

@@ -1,6 +1,6 @@
-use openssl::ssl::SslRef;
+use md5::{Digest, Md5};
 use openssl::nid::Nid;
-use md5::{Md5, Digest};
+use openssl::ssl::SslRef;
 
 pub fn build_tls_server_fingerprint(ssl: &SslRef) -> (String, String) {
     // TLS version string (e.g. "TLSv1.3")

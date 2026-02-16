@@ -1,6 +1,15 @@
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time::{Duration, timeout}};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::{timeout, Duration},
+};
 
-use crate::{probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}}, service::ServiceFingerprint};
+use crate::{
+    probes::{
+        helper::{connect_with_timeout, push_line},
+        Probe, ProbeContext,
+    },
+    service::ServiceFingerprint,
+};
 
 pub struct ElasticProbe;
 
@@ -14,7 +23,9 @@ impl Probe for ElasticProbe {
             Some(s) => s,
             None => {
                 push_line(&mut evidence, "elastic", "connect_timeout");
-                return Some(ServiceFingerprint::from_banner(ip, port, "elastic", evidence));
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "elastic", evidence,
+                ));
             }
         };
 
@@ -23,9 +34,14 @@ impl Probe for ElasticProbe {
             "GET / HTTP/1.1\r\nHost: {ip}\r\nUser-Agent: rustlite-scan\r\nConnection: close\r\n\r\n"
         );
 
-        if timeout(timeout_dur, tcp.write_all(req.as_bytes())).await.is_err() {
+        if timeout(timeout_dur, tcp.write_all(req.as_bytes()))
+            .await
+            .is_err()
+        {
             push_line(&mut evidence, "elastic", "write_error");
-            return Some(ServiceFingerprint::from_banner(ip, port, "elastic", evidence));
+            return Some(ServiceFingerprint::from_banner(
+                ip, port, "elastic", evidence,
+            ));
         }
 
         let mut buf = vec![0u8; 16384];
@@ -33,7 +49,9 @@ impl Probe for ElasticProbe {
             Ok(Ok(n)) if n > 0 => n,
             _ => {
                 push_line(&mut evidence, "elastic", "read_error");
-                return Some(ServiceFingerprint::from_banner(ip, port, "elastic", evidence));
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "elastic", evidence,
+                ));
             }
         };
 
@@ -77,13 +95,31 @@ impl Probe for ElasticProbe {
             push_line(&mut evidence, "elastic", "no_json_body");
         }
 
-        Some(ServiceFingerprint::from_banner(ip, port, "elastic", evidence))
+        Some(ServiceFingerprint::from_banner(
+            ip, port, "elastic", evidence,
+        ))
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
-        self.probe(ip, port, ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000)).await
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        self.probe(
+            ip,
+            port,
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![9200] }
-    fn name(&self) -> &'static str { "elastic" }
+    fn ports(&self) -> Vec<u16> {
+        vec![9200]
+    }
+    fn name(&self) -> &'static str {
+        "elastic"
+    }
 }

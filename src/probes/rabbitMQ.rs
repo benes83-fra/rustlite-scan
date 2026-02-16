@@ -1,10 +1,13 @@
+use crate::{
+    probes::{
+        helper::{connect_with_timeout, push_line},
+        Probe, ProbeContext,
+    },
+    service::ServiceFingerprint,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    time::{Duration, timeout},
-};
-use crate::{
-    probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}},
-    service::ServiceFingerprint,
+    time::{timeout, Duration},
 };
 
 use std::collections::HashMap;
@@ -21,7 +24,9 @@ impl Probe for RabbitMqProbe {
             Some(s) => s,
             None => {
                 push_line(&mut evidence, "rabbitmq", "connect_timeout");
-                return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "rabbitmq", evidence,
+                ));
             }
         };
         let header = b"AMQP\x00\x00\x09\x01";
@@ -30,59 +35,64 @@ impl Probe for RabbitMqProbe {
         // RabbitMQ sends Connection.Start immediately; we just read one frame.
         let frame = match read_amqp_frame(&mut tcp, timeout_dur).await {
             Some(f) => f,
-          None => {
-                    // --- Fallback: try AMQP 1.0 ---
-                    let mut tcp2 = match connect_with_timeout(ip, port, timeout_ms).await {
-                        Some(s) => s,
-                        None => {
-                            push_line(&mut evidence, "rabbitmq", "connect_timeout");
-                            return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+            None => {
+                // --- Fallback: try AMQP 1.0 ---
+                let mut tcp2 = match connect_with_timeout(ip, port, timeout_ms).await {
+                    Some(s) => s,
+                    None => {
+                        push_line(&mut evidence, "rabbitmq", "connect_timeout");
+                        return Some(ServiceFingerprint::from_banner(
+                            ip, port, "rabbitmq", evidence,
+                        ));
+                    }
+                };
+
+                const AMQP_1_0_HEADER: &[u8] = b"AMQP\x00\x01\x00\x00";
+
+                // Send AMQP 1.0 header
+                if timeout(timeout_dur, tcp2.write_all(AMQP_1_0_HEADER))
+                    .await
+                    .is_ok()
+                {
+                    // Try to read the echoed header
+                    let mut resp = [0u8; 8];
+                    let mut read = 0;
+
+                    while read < 8 {
+                        let n = match timeout(timeout_dur, tcp2.read(&mut resp[read..])).await {
+                            Ok(Ok(n)) => n,
+                            _ => break,
+                        };
+                        if n == 0 {
+                            break;
                         }
-                    };
-
-                    const AMQP_1_0_HEADER: &[u8] = b"AMQP\x00\x01\x00\x00";
-
-                    // Send AMQP 1.0 header
-                    if timeout(timeout_dur, tcp2.write_all(AMQP_1_0_HEADER)).await.is_ok() {
-                        // Try to read the echoed header
-                        let mut resp = [0u8; 8];
-                        let mut read = 0;
-
-                        while read < 8 {
-                            let n = match timeout(timeout_dur, tcp2.read(&mut resp[read..])).await {
-                                Ok(Ok(n)) => n,
-                                _ => break,
-                            };
-                            if n == 0 {
-                                break;
-                            }
-                            read += n;
-                        }
-
-                        if resp == AMQP_1_0_HEADER {
-                            // --- AMQP 1.0 detected ---
-                            push_line(&mut evidence, "amqp1.0", "protocol_header_accepted");
-
-                            return Some(ServiceFingerprint::from_banner(
-                                ip,
-                                port,
-                                "amqp1.0",
-                                evidence,
-                            ));
-                        }
+                        read += n;
                     }
 
-                    // If we reach here, AMQP 1.0 also failed
-                    push_line(&mut evidence, "rabbitmq", "read_error");
-                    return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+                    if resp == AMQP_1_0_HEADER {
+                        // --- AMQP 1.0 detected ---
+                        push_line(&mut evidence, "amqp1.0", "protocol_header_accepted");
+
+                        return Some(ServiceFingerprint::from_banner(
+                            ip, port, "amqp1.0", evidence,
+                        ));
+                    }
                 }
 
+                // If we reach here, AMQP 1.0 also failed
+                push_line(&mut evidence, "rabbitmq", "read_error");
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "rabbitmq", evidence,
+                ));
+            }
         };
 
         // type 1 = METHOD
         if frame.frame_type != 1 {
             push_line(&mut evidence, "rabbitmq", "unexpected_frame_type");
-            return Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence));
+            return Some(ServiceFingerprint::from_banner(
+                ip, port, "rabbitmq", evidence,
+            ));
         }
 
         if let Some(info) = parse_connection_start(&frame.payload) {
@@ -112,10 +122,17 @@ impl Probe for RabbitMqProbe {
             push_line(&mut evidence, "rabbitmq", "parse_error");
         }
 
-        Some(ServiceFingerprint::from_banner(ip, port, "rabbitmq", evidence))
+        Some(ServiceFingerprint::from_banner(
+            ip, port, "rabbitmq", evidence,
+        ))
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
@@ -126,8 +143,12 @@ impl Probe for RabbitMqProbe {
         .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![5672] }
-    fn name(&self) -> &'static str { "rabbitmq" }
+    fn ports(&self) -> Vec<u16> {
+        vec![5672]
+    }
+    fn name(&self) -> &'static str {
+        "rabbitmq"
+    }
 }
 
 // =================== AMQP frame reading ===================
@@ -149,19 +170,16 @@ async fn read_amqp_frame(
     while read < 7 {
         let n = match timeout(timeout_dur, tcp.read(&mut header[read..])).await {
             Ok(Ok(n)) => n,
-            
+
             _ => return None,
         };
 
         if n == 0 {
-           
             return None; // connection closed early
         }
 
         read += n;
-       
     }
-  
 
     let frame_type = header[0];
     let channel = u16::from_be_bytes([header[1], header[2]]);
@@ -191,7 +209,11 @@ async fn read_amqp_frame(
 
     let payload = buf[..size].to_vec();
 
-    Some(AmqpFrame { frame_type, channel, payload })
+    Some(AmqpFrame {
+        frame_type,
+        channel,
+        payload,
+    })
 }
 
 // =================== AMQP field/value types ===================
@@ -297,8 +319,16 @@ fn parse_connection_start(payload: &[u8]) -> Option<RabbitMqInfo> {
         version,
         platform,
         cluster_name,
-        mechanisms: if mechanisms.is_empty() { None } else { Some(mechanisms) },
-        locales: if locales.is_empty() { None } else { Some(locales) },
+        mechanisms: if mechanisms.is_empty() {
+            None
+        } else {
+            Some(mechanisms)
+        },
+        locales: if locales.is_empty() {
+            None
+        } else {
+            Some(locales)
+        },
         capabilities: capabilities_vec,
     })
 }
@@ -362,13 +392,21 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
         let (key, key_off) = match parse_shortstr(buf, cur) {
             Some(v) => v,
             None => {
-                if strict { return None; } else { break; }
+                if strict {
+                    return None;
+                } else {
+                    break;
+                }
             }
         };
         cur = key_off;
 
         if buf.len() < cur + 1 {
-            if strict { return None; } else { break; }
+            if strict {
+                return None;
+            } else {
+                break;
+            }
         }
         let ftype = buf[cur];
         cur += 1;
@@ -379,14 +417,22 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
                 match parse_longstr(buf, cur) {
                     Some((s, n)) => (AmqpFieldValue::Str(s), n),
                     None => {
-                        if strict { return None; } else { break; }
+                        if strict {
+                            return None;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
             b't' => {
                 // boolean (1 byte)
                 if buf.len() < cur + 1 {
-                    if strict { return None; } else { break; }
+                    if strict {
+                        return None;
+                    } else {
+                        break;
+                    }
                 }
                 let b = buf[cur] != 0;
                 (AmqpFieldValue::Bool(b), cur + 1)
@@ -394,7 +440,11 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
             b'I' => {
                 // 32-bit signed int
                 if buf.len() < cur + 4 {
-                    if strict { return None; } else { break; }
+                    if strict {
+                        return None;
+                    } else {
+                        break;
+                    }
                 }
                 let _v = i32::from_be_bytes([buf[cur], buf[cur + 1], buf[cur + 2], buf[cur + 3]]);
                 (AmqpFieldValue::Int(), cur + 4)
@@ -404,7 +454,11 @@ fn parse_amqp_table(buf: &[u8], off: usize, strict: bool) -> Option<(AmqpTable, 
                 match parse_amqp_table(buf, cur, false) {
                     Some((t, n)) => (AmqpFieldValue::Table(t), n),
                     None => {
-                        if strict { return None; } else { break; }
+                        if strict {
+                            return None;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }

@@ -1,8 +1,8 @@
-use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
+use crate::probes::{helper::push_line, Probe, ProbeContext};
 use crate::service::ServiceFingerprint;
 use rand::Rng;
+use tokio::net::UdpSocket;
+use tokio::time::{timeout, Duration};
 
 /// CoAP version is always 1
 const COAP_VERSION: u8 = 0x01;
@@ -128,41 +128,45 @@ impl Probe for CoapProbe {
                 return Some(fp);
             }
             let token_bytes = &resp[offset..offset + tkl];
-            push_line(&mut evidence, "coap_token", &format!("{:02X?}", token_bytes));
+            push_line(
+                &mut evidence,
+                "coap_token",
+                &format!("{:02X?}", token_bytes),
+            );
             offset += tkl;
         }
 
         // Options: we’ll just skip them until payload marker (0xFF) or end
         let mut options: Vec<(u16, Vec<u8>)> = Vec::new();
-            let mut current_opt_num: u16 = 0;
+        let mut current_opt_num: u16 = 0;
 
-            while offset < resp.len() {
-                if resp[offset] == 0xFF {
-                    offset += 1;
-                    break;
-                }
-
-                let opt_byte = resp[offset];
+        while offset < resp.len() {
+            if resp[offset] == 0xFF {
                 offset += 1;
+                break;
+            }
 
-                let delta = (opt_byte >> 4) & 0x0F;
-                let len = (opt_byte & 0x0F) as usize;
+            let opt_byte = resp[offset];
+            offset += 1;
 
-                // Extended delta/length not supported here
-                if delta == 13 || delta == 14 || len == 13 || len == 14 {
-                    break;
-                }
+            let delta = (opt_byte >> 4) & 0x0F;
+            let len = (opt_byte & 0x0F) as usize;
 
-                current_opt_num += delta as u16;
+            // Extended delta/length not supported here
+            if delta == 13 || delta == 14 || len == 13 || len == 14 {
+                break;
+            }
 
-                if offset + len > resp.len() {
-                    break;
-                }
+            current_opt_num += delta as u16;
 
-                let val = resp[offset..offset + len].to_vec();
-                offset += len;
+            if offset + len > resp.len() {
+                break;
+            }
 
-                options.push((current_opt_num, val));
+            let val = resp[offset..offset + len].to_vec();
+            offset += len;
+
+            options.push((current_opt_num, val));
         }
         if let Some(cf) = parse_content_format(&options) {
             push_line(&mut evidence, "coap_content_format", &format!("{}", cf));
@@ -182,7 +186,6 @@ impl Probe for CoapProbe {
             push_line(&mut evidence, "coap_content_format_name", cf_name);
         }
 
-
         // Payload
         if offset < resp.len() {
             let payload = &resp[offset..];
@@ -190,11 +193,7 @@ impl Probe for CoapProbe {
             if !payload.is_empty() {
                 // Try UTF-8
                 if let Ok(s) = std::str::from_utf8(payload) {
-                    let snippet = if s.len() > 256 {
-                        &s[..256]
-                    } else {
-                        s
-                    };
+                    let snippet = if s.len() > 256 { &s[..256] } else { s };
                     push_line(&mut evidence, "coap_payload_text", snippet);
                     let resources = parse_rfc6690(s);
 
@@ -215,7 +214,9 @@ impl Probe for CoapProbe {
 
                         // Receive response (short timeout)
                         let mut buf2 = [0u8; 2048];
-                        if let Ok(Ok((n2, _))) = timeout(Duration::from_millis(500), socket.recv_from(&mut buf2)).await {
+                        if let Ok(Ok((n2, _))) =
+                            timeout(Duration::from_millis(500), socket.recv_from(&mut buf2)).await
+                        {
                             let resp2 = &buf2[..n2];
 
                             enum_results.push((path.clone(), resp2.to_vec()));
@@ -237,7 +238,7 @@ impl Probe for CoapProbe {
                         }
 
                         // Try UTF-8
-                     // Try UTF-8 first
+                        // Try UTF-8 first
                         if let Ok(s) = std::str::from_utf8(payload) {
                             push_line(&mut evidence, "coap_enum_payload_text", s.trim());
                         } else {
@@ -245,32 +246,36 @@ impl Probe for CoapProbe {
                             if let Some(decoded) = try_parse_cbor(payload) {
                                 push_line(&mut evidence, "coap_enum_payload_cbor", &decoded);
                             } else {
-                                push_line(&mut evidence, "coap_enum_payload_raw", &format!("{:02X?}", payload));
+                                push_line(
+                                    &mut evidence,
+                                    "coap_enum_payload_raw",
+                                    &format!("{:02X?}", payload),
+                                );
                             }
                         }
-
                     }
 
+                    for res in &resources {
+                        push_line(&mut evidence, "coap_resource", &res.path);
 
-
-
-                    for res in &resources { 
-                        push_line(&mut evidence, "coap_resource", &res.path); 
-                        
-                        for (k, v) in &res.attrs { 
-                            if v.is_empty() { 
-                                push_line(&mut  evidence, "coap_attr_flag", &format!("{} (flag)", k));
-                             } else {
-                                 push_line(&mut evidence, "coap_attr", &format!("{}={}", k, v));
-                                } 
-                        } 
+                        for (k, v) in &res.attrs {
+                            if v.is_empty() {
+                                push_line(
+                                    &mut evidence,
+                                    "coap_attr_flag",
+                                    &format!("{} (flag)", k),
+                                );
+                            } else {
+                                push_line(&mut evidence, "coap_attr", &format!("{}={}", k, v));
+                            }
+                        }
                     }
                     // Heuristic vendor hints from payload
-                  
+
                     let vendor = detect_coap_vendor(&resources, s);
                     if let Some(v) = vendor {
-                         push_line(&mut evidence, "coap_vendor", v); 
-                         confidence = confidence.max(85); 
+                        push_line(&mut evidence, "coap_vendor", v);
+                        confidence = confidence.max(85);
                     }
                     let capabilities = detect_coap_capabilities(&resources);
 
@@ -278,14 +283,16 @@ impl Probe for CoapProbe {
                         push_line(&mut evidence, "coap_capability", cap);
                         confidence = confidence.max(80);
                     }
-                    push_line(&mut evidence, "coap_summary", &format!(
-                        "Device exposes {} resource(s); capabilities: {}; vendor: {}",
-                        resources.len(),
-                        capabilities.join(", "),
-                        vendor.unwrap_or("unknown")
-                    ));
-
-
+                    push_line(
+                        &mut evidence,
+                        "coap_summary",
+                        &format!(
+                            "Device exposes {} resource(s); capabilities: {}; vendor: {}",
+                            resources.len(),
+                            capabilities.join(", "),
+                            vendor.unwrap_or("unknown")
+                        ),
+                    );
                 } else {
                     push_line(
                         &mut evidence,
@@ -335,10 +342,9 @@ fn build_coap_get_well_known_core(msg_id: u16, token: &[u8]) -> Vec<u8> {
     // Type (2 bits) = Confirmable (0)
     // TKL (4 bits) = token length
     let tkl = token.len();
-    let first =
-        ((COAP_VERSION & 0x03) << 6) |
-        ((CoapType::Confirmable as u8 & 0x03) << 4) |
-        (tkl as u8 & 0x0F);
+    let first = ((COAP_VERSION & 0x03) << 6)
+        | ((CoapType::Confirmable as u8 & 0x03) << 4)
+        | (tkl as u8 & 0x0F);
 
     let code = CoapCode::Get as u8; // 0.01
     let msg_id_bytes = msg_id.to_be_bytes();
@@ -451,38 +457,40 @@ fn parse_rfc6690(payload: &str) -> Vec<CoapResource> {
     resources
 }
 
-
 fn detect_coap_vendor(resources: &[CoapResource], payload: &str) -> Option<&'static str> {
     let payload_lower = payload.to_lowercase();
 
     for sig in COAP_VENDOR_SIGNATURES {
         // Path match
         let path_hit = sig.path_contains.iter().any(|needle| {
-            resources.iter().any(|r| r.path.to_lowercase().contains(needle))
+            resources
+                .iter()
+                .any(|r| r.path.to_lowercase().contains(needle))
         });
 
         // rt= match
         let rt_hit = sig.rt_contains.iter().any(|needle| {
             resources.iter().any(|r| {
-                r.attrs.iter().any(|(k, v)| {
-                    k == "rt" && v.to_lowercase().contains(needle)
-                })
+                r.attrs
+                    .iter()
+                    .any(|(k, v)| k == "rt" && v.to_lowercase().contains(needle))
             })
         });
 
         // if= match
         let if_hit = sig.if_contains.iter().any(|needle| {
             resources.iter().any(|r| {
-                r.attrs.iter().any(|(k, v)| {
-                    k == "if" && v.to_lowercase().contains(needle)
-                })
+                r.attrs
+                    .iter()
+                    .any(|(k, v)| k == "if" && v.to_lowercase().contains(needle))
             })
         });
 
         // Payload match
-        let payload_hit = sig.payload_contains.iter().any(|needle| {
-            payload_lower.contains(needle)
-        });
+        let payload_hit = sig
+            .payload_contains
+            .iter()
+            .any(|needle| payload_lower.contains(needle));
 
         if path_hit || rt_hit || if_hit || payload_hit {
             return Some(sig.vendor);
@@ -491,9 +499,6 @@ fn detect_coap_vendor(resources: &[CoapResource], payload: &str) -> Option<&'sta
 
     None
 }
-
-
-
 
 #[derive(Debug)]
 pub struct CoapVendorSignature {
@@ -504,7 +509,6 @@ pub struct CoapVendorSignature {
     pub payload_contains: &'static [&'static str],
 }
 
-
 pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
     // --- Philips Hue ---
     CoapVendorSignature {
@@ -514,7 +518,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &["sensor", "light"],
         payload_contains: &["philips", "hue"],
     },
-
     // --- IKEA Tradfri ---
     CoapVendorSignature {
         vendor: "ikea_tradfri",
@@ -523,7 +526,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &[],
         payload_contains: &["tradfri", "ikea"],
     },
-
     // --- Shelly ---
     CoapVendorSignature {
         vendor: "shelly",
@@ -532,7 +534,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &[],
         payload_contains: &["shelly"],
     },
-
     // --- Sonoff ---
     CoapVendorSignature {
         vendor: "sonoff",
@@ -541,7 +542,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &[],
         payload_contains: &["sonoff"],
     },
-
     // --- Tuya ---
     CoapVendorSignature {
         vendor: "tuya",
@@ -550,7 +550,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &[],
         payload_contains: &["tuya"],
     },
-
     // --- Bosch ---
     CoapVendorSignature {
         vendor: "bosch",
@@ -559,7 +558,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &[],
         payload_contains: &["bosch"],
     },
-
     // --- LwM2M (OMA Lightweight M2M) ---
     CoapVendorSignature {
         vendor: "lwm2m",
@@ -569,7 +567,6 @@ pub const COAP_VENDOR_SIGNATURES: &[CoapVendorSignature] = &[
         if_contains: &["lwm2m"],
         payload_contains: &["lwm2m", "oma"],
     },
-
     // --- Generic IoT sensors ---
     CoapVendorSignature {
         vendor: "generic_sensor",
@@ -598,7 +595,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &[],
         flags: &["obs"],
     },
-
     // --- Temperature sensor ---
     CoapCapabilitySignature {
         capability: "temperature_sensor",
@@ -607,7 +603,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &["sensor"],
         flags: &[],
     },
-
     // --- Humidity sensor ---
     CoapCapabilitySignature {
         capability: "humidity_sensor",
@@ -616,7 +611,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &["sensor"],
         flags: &[],
     },
-
     // --- Light / lamp ---
     CoapCapabilitySignature {
         capability: "light",
@@ -625,7 +619,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &["light"],
         flags: &[],
     },
-
     // --- Switch / relay ---
     CoapCapabilitySignature {
         capability: "switch",
@@ -634,7 +627,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &["control"],
         flags: &[],
     },
-
     // --- Thermostat ---
     CoapCapabilitySignature {
         capability: "thermostat",
@@ -643,7 +635,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &[],
         flags: &[],
     },
-
     // --- Generic sensor ---
     CoapCapabilitySignature {
         capability: "sensor",
@@ -652,7 +643,6 @@ pub const COAP_CAPABILITY_SIGNATURES: &[CoapCapabilitySignature] = &[
         if_contains: &["sensor"],
         flags: &[],
     },
-
     // --- Generic actuator ---
     CoapCapabilitySignature {
         capability: "actuator",
@@ -670,7 +660,9 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
 
         // Path match
         if sig.path_contains.iter().any(|needle| {
-            resources.iter().any(|r| r.path.to_lowercase().contains(needle))
+            resources
+                .iter()
+                .any(|r| r.path.to_lowercase().contains(needle))
         }) {
             hit = true;
         }
@@ -678,9 +670,9 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
         // rt= match
         if sig.rt_contains.iter().any(|needle| {
             resources.iter().any(|r| {
-                r.attrs.iter().any(|(k, v)| {
-                    k == "rt" && v.to_lowercase().contains(needle)
-                })
+                r.attrs
+                    .iter()
+                    .any(|(k, v)| k == "rt" && v.to_lowercase().contains(needle))
             })
         }) {
             hit = true;
@@ -689,9 +681,9 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
         // if= match
         if sig.if_contains.iter().any(|needle| {
             resources.iter().any(|r| {
-                r.attrs.iter().any(|(k, v)| {
-                    k == "if" && v.to_lowercase().contains(needle)
-                })
+                r.attrs
+                    .iter()
+                    .any(|(k, v)| k == "if" && v.to_lowercase().contains(needle))
             })
         }) {
             hit = true;
@@ -699,9 +691,9 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
 
         // Flag match
         if sig.flags.iter().any(|needle| {
-            resources.iter().any(|r| {
-                r.attrs.iter().any(|(k, _)| k == needle)
-            })
+            resources
+                .iter()
+                .any(|r| r.attrs.iter().any(|(k, _)| k == needle))
         }) {
             hit = true;
         }
@@ -714,13 +706,11 @@ fn detect_coap_capabilities(resources: &[CoapResource]) -> Vec<&'static str> {
     caps
 }
 
-
 fn build_coap_get(path: &str, msg_id: u16, token: &[u8]) -> Vec<u8> {
     let tkl = token.len();
-    let first =
-        ((COAP_VERSION & 0x03) << 6) |
-        ((CoapType::Confirmable as u8 & 0x03) << 4) |
-        (tkl as u8 & 0x0F);
+    let first = ((COAP_VERSION & 0x03) << 6)
+        | ((CoapType::Confirmable as u8 & 0x03) << 4)
+        | (tkl as u8 & 0x0F);
 
     let code = CoapCode::Get as u8;
     let msg_id_bytes = msg_id.to_be_bytes();

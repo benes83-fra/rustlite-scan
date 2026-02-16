@@ -1,23 +1,30 @@
 use async_trait::async_trait;
+use openssl::ssl::{SslConnector, SslMethod};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_openssl::SslStream;
-use openssl::ssl::{SslConnector, SslMethod};
 
+use super::Probe;
 use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
-use super::Probe;
 
 pub struct HttpsProbe;
 
 #[async_trait]
 impl Probe for HttpsProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
@@ -49,7 +56,11 @@ impl Probe for HttpsProbe {
 
         // Extract cert info
         if let Some(cert) = pinned.ssl().peer_certificate() {
-            if let Some(entry) = cert.subject_name().entries_by_nid(openssl::nid::Nid::COMMONNAME).next() {
+            if let Some(entry) = cert
+                .subject_name()
+                .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+                .next()
+            {
                 if let Ok(data) = entry.data().as_utf8() {
                     push_line(&mut evidence, "TLS_subject_cn", &data.to_string());
                 }
@@ -58,14 +69,26 @@ impl Probe for HttpsProbe {
                 let mut s = String::new();
                 for gen in san_stack.iter() {
                     if let Some(dns) = gen.dnsname() {
-                        if !s.is_empty() { s.push_str(", "); }
+                        if !s.is_empty() {
+                            s.push_str(", ");
+                        }
                         s.push_str(dns);
                     }
                 }
-                if !s.is_empty() { push_line(&mut evidence, "TLS_SANs", &s); }
+                if !s.is_empty() {
+                    push_line(&mut evidence, "TLS_SANs", &s);
+                }
             }
-            push_line(&mut evidence, "TLS_not_before", &cert.not_before().to_string());
-            push_line(&mut evidence, "TLS_not_after", &cert.not_after().to_string());
+            push_line(
+                &mut evidence,
+                "TLS_not_before",
+                &cert.not_before().to_string(),
+            );
+            push_line(
+                &mut evidence,
+                "TLS_not_after",
+                &cert.not_after().to_string(),
+            );
         }
 
         // Cipher/TLS version/ALPN
@@ -83,7 +106,10 @@ impl Probe for HttpsProbe {
         let mut reader = BufReader::new(ssl_stream_owned);
 
         // Send HTTP GET
-        let req = format!("GET / HTTP/1.0\r\nHost: {}\r\nUser-Agent: rustlite-scan\r\n\r\n", ip);
+        let req = format!(
+            "GET / HTTP/1.0\r\nHost: {}\r\nUser-Agent: rustlite-scan\r\n\r\n",
+            ip
+        );
         reader.get_mut().write_all(req.as_bytes()).await.ok()?;
 
         // Read status line
@@ -95,9 +121,13 @@ impl Probe for HttpsProbe {
         let mut headers = String::new();
         loop {
             if let Some(h) = read_line_timeout(&mut reader, Duration::from_millis(500)).await {
-                if h.trim().is_empty() { break; }
+                if h.trim().is_empty() {
+                    break;
+                }
                 headers.push_str(&h);
-            } else { break; }
+            } else {
+                break;
+            }
         }
         for line in headers.lines() {
             if line.to_lowercase().starts_with("server:") {
@@ -105,16 +135,26 @@ impl Probe for HttpsProbe {
             }
         }
 
-        if evidence.is_empty() { None }
-        else { Some(ServiceFingerprint::from_banner(ip, port, "https", evidence)) }
+        if evidence.is_empty() {
+            None
+        } else {
+            Some(ServiceFingerprint::from_banner(ip, port, "https", evidence))
+        }
     }
 
-    fn ports(&self) -> Vec<u16> { vec![443] }
-    fn name(&self) -> &'static str { "https" }
+    fn ports(&self) -> Vec<u16> {
+        vec![443]
+    }
+    fn name(&self) -> &'static str {
+        "https"
+    }
 }
 
 // Generic helper
-async fn read_line_timeout<R: AsyncBufRead + Unpin>(reader: &mut R, dur: Duration) -> Option<String> {
+async fn read_line_timeout<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    dur: Duration,
+) -> Option<String> {
     let mut line = String::new();
     match timeout(dur, reader.read_line(&mut line)).await {
         Ok(Ok(0)) => None,
@@ -124,7 +164,9 @@ async fn read_line_timeout<R: AsyncBufRead + Unpin>(reader: &mut R, dur: Duratio
 }
 
 fn push_line(out: &mut String, label: &str, value: &str) {
-    if !out.is_empty() { out.push('\n'); }
+    if !out.is_empty() {
+        out.push('\n');
+    }
     out.push_str(label);
     out.push_str(": ");
     out.push_str(value);

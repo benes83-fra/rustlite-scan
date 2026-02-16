@@ -1,9 +1,18 @@
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time::{Duration, timeout}};
-use crate::{probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}}, service::ServiceFingerprint};
+use crate::{
+    probes::{
+        helper::{connect_with_timeout, push_line},
+        Probe, ProbeContext,
+    },
+    service::ServiceFingerprint,
+};
 use bson::{doc, Document};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::{timeout, Duration},
+};
 
-use std::io::Cursor;
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use std::io::Cursor;
 pub struct MongoProbe;
 
 #[async_trait::async_trait]
@@ -16,26 +25,35 @@ impl Probe for MongoProbe {
             Some(s) => s,
             None => {
                 push_line(&mut evidence, "mongodb", "connect_timeout");
-                return Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence));
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "mongodb", evidence,
+                ));
             }
         };
 
         // Build minimal OP_MSG with { hello: 1 }
         let hello_cmd = build_hello_opmsg();
 
-        if timeout(timeout_dur, tcp.write_all(&hello_cmd)).await.is_err() {
+        if timeout(timeout_dur, tcp.write_all(&hello_cmd))
+            .await
+            .is_err()
+        {
             push_line(&mut evidence, "mongodb", "write_error");
-            return Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence));
+            return Some(ServiceFingerprint::from_banner(
+                ip, port, "mongodb", evidence,
+            ));
         }
 
-       
         let msg = match read_mongo_message(&mut tcp, timeout_dur).await {
-                    Some(m) => m,
-                    None => { push_line(&mut evidence, "mongodb", "read_error"); 
-                    return Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence)); }
-                };
+            Some(m) => m,
+            None => {
+                push_line(&mut evidence, "mongodb", "read_error");
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "mongodb", evidence,
+                ));
+            }
+        };
         let mut info = parse_hello_response(&msg);
-
 
         // If hello returned no wire info (max_wire == 0), fallback to isMaster
         let need_fallback = match &info {
@@ -46,9 +64,14 @@ impl Probe for MongoProbe {
         if need_fallback {
             // send isMaster
             let ismaster_cmd = build_ismaster_opmsg();
-            if timeout(timeout_dur, tcp.write_all(&ismaster_cmd)).await.is_err() {
+            if timeout(timeout_dur, tcp.write_all(&ismaster_cmd))
+                .await
+                .is_err()
+            {
                 push_line(&mut evidence, "mongodb", "write_error");
-                return Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence));
+                return Some(ServiceFingerprint::from_banner(
+                    ip, port, "mongodb", evidence,
+                ));
             }
 
             // read fallback response
@@ -56,13 +79,18 @@ impl Probe for MongoProbe {
                 Some(m) => m,
                 None => {
                     push_line(&mut evidence, "mongodb", "read_error");
-                    return Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence));
+                    return Some(ServiceFingerprint::from_banner(
+                        ip, port, "mongodb", evidence,
+                    ));
                 }
             };
             info = parse_hello_response(&msg2);
         }
         let buildinfo_cmd = build_buildinfo_opmsg();
-        if timeout(timeout_dur, tcp.write_all(&buildinfo_cmd)).await.is_ok() {
+        if timeout(timeout_dur, tcp.write_all(&buildinfo_cmd))
+            .await
+            .is_ok()
+        {
             if let Some(msg) = read_mongo_message(&mut tcp, timeout_dur).await {
                 if let Some(bi) = parse_buildinfo_response(&msg) {
                     push_line(&mut evidence, "mongodb_version", &bi);
@@ -75,8 +103,11 @@ impl Probe for MongoProbe {
             if let Some(ver) = info.version {
                 push_line(&mut evidence, "mongodb_version", &ver);
             }
-            push_line(&mut evidence, "mongodb_wire_version",
-                &format!("{}-{}", info.min_wire, info.max_wire));
+            push_line(
+                &mut evidence,
+                "mongodb_wire_version",
+                &format!("{}-{}", info.min_wire, info.max_wire),
+            );
 
             if let Some(role) = info.role {
                 push_line(&mut evidence, "mongodb_role", &role);
@@ -89,16 +120,34 @@ impl Probe for MongoProbe {
             }
         } else {
             push_line(&mut evidence, "mongodb", "parse_error");
-}
-        Some(ServiceFingerprint::from_banner(ip, port, "mongodb", evidence))
+        }
+        Some(ServiceFingerprint::from_banner(
+            ip, port, "mongodb", evidence,
+        ))
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
-        self.probe(ip, port, ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000)).await
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        self.probe(
+            ip,
+            port,
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![27017] }
-    fn name(&self) -> &'static str { "mongodb" }
+    fn ports(&self) -> Vec<u16> {
+        vec![27017]
+    }
+    fn name(&self) -> &'static str {
+        "mongodb"
+    }
 }
 
 async fn read_mongo_message(
@@ -107,7 +156,10 @@ async fn read_mongo_message(
 ) -> Option<Vec<u8>> {
     // read first 4 bytes (messageLength)
     let mut len_buf = [0u8; 4];
-    if timeout(timeout_dur, tcp.read_exact(&mut len_buf)).await.is_err() {
+    if timeout(timeout_dur, tcp.read_exact(&mut len_buf))
+        .await
+        .is_err()
+    {
         return None;
     }
     let total_len = LittleEndian::read_i32(&len_buf) as usize;
@@ -117,7 +169,10 @@ async fn read_mongo_message(
 
     // we already read 4 bytes, now read the remaining total_len - 4 bytes
     let mut rest = vec![0u8; total_len - 4];
-    if timeout(timeout_dur, tcp.read_exact(&mut rest)).await.is_err() {
+    if timeout(timeout_dur, tcp.read_exact(&mut rest))
+        .await
+        .is_err()
+    {
         return None;
     }
 
@@ -205,9 +260,7 @@ fn parse_buildinfo_response(buf: &[u8]) -> Option<String> {
     let doc = doc_opt?;
 
     // Extract version field from buildInfo
-    doc.get_str("version")
-        .ok()
-        .map(|s| s.to_string())
+    doc.get_str("version").ok().map(|s| s.to_string())
 }
 
 fn build_buildinfo_opmsg() -> Vec<u8> {
@@ -233,11 +286,9 @@ fn build_buildinfo_opmsg() -> Vec<u8> {
     msg
 }
 
-
 fn build_hello_opmsg() -> Vec<u8> {
     // BSON document: { "hello": 1, "helloOk": true }
     let body = bson::to_vec(&doc! { "hello": 1, "helloOk": true, "$db": "admin" }).unwrap();
-
 
     let mut msg = Vec::with_capacity(16 + 4 + 1 + body.len());
 
@@ -270,10 +321,8 @@ fn build_hello_opmsg() -> Vec<u8> {
     msg
 }
 
-
 fn build_ismaster_opmsg() -> Vec<u8> {
     let body = bson::to_vec(&doc! { "isMaster": 1, "$db": "admin" }).unwrap();
-
 
     let mut msg = Vec::with_capacity(16 + 4 + 1 + body.len());
 
@@ -305,7 +354,6 @@ fn build_ismaster_opmsg() -> Vec<u8> {
 
     msg
 }
-
 
 #[derive(Debug)]
 pub struct MongoHelloInfo {
@@ -401,19 +449,22 @@ fn parse_hello_response(buf: &[u8]) -> Option<MongoHelloInfo> {
     let doc = doc_opt?;
 
     // TEMP DEBUG: uncomment to inspect the actual reply document while tuning
-     //println!("mongo hello doc: {:?}", doc);
+    //println!("mongo hello doc: {:?}", doc);
 
     // Extract fields (hello or isMaster style)
-    let version = doc.get_str("version")
+    let version = doc
+        .get_str("version")
         .or_else(|_| doc.get_str("mongodbVersion"))
         .ok()
         .map(|s| s.to_string());
 
-    let min_wire = doc.get_i32("minWireVersion")
+    let min_wire = doc
+        .get_i32("minWireVersion")
         .or_else(|_| doc.get_i32("minWireVersionInternal"))
         .unwrap_or(0);
 
-    let max_wire = doc.get_i32("maxWireVersion")
+    let max_wire = doc
+        .get_i32("maxWireVersion")
         .or_else(|_| doc.get_i32("maxWireVersionInternal"))
         .unwrap_or(0);
 
@@ -458,6 +509,3 @@ fn parse_hello_response(buf: &[u8]) -> Option<MongoHelloInfo> {
         features,
     })
 }
-
-
-

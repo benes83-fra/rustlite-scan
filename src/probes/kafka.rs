@@ -1,13 +1,16 @@
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use std::collections::HashMap;
+use std::io::Cursor;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     time::{timeout, Duration},
 };
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use std::collections::HashMap;
-use std::io::{Cursor};
 
 use crate::{
-    probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}},
+    probes::{
+        helper::{connect_with_timeout, push_line},
+        Probe, ProbeContext,
+    },
     service::ServiceFingerprint,
 };
 
@@ -45,7 +48,10 @@ impl Probe for KafkaProbe {
 
             // Read length prefix
             let mut len_buf = [0u8; 4];
-            if read_exact_timeout(&mut tcp, &mut len_buf, timeout_dur).await.is_none() {
+            if read_exact_timeout(&mut tcp, &mut len_buf, timeout_dur)
+                .await
+                .is_none()
+            {
                 tcp = match connect_with_timeout(ip, port, timeout_ms).await {
                     Some(s) => s,
                     None => break,
@@ -68,7 +74,10 @@ impl Probe for KafkaProbe {
             }
 
             let mut payload = vec![0u8; len];
-            if read_exact_timeout(&mut tcp, &mut payload, timeout_dur).await.is_none() {
+            if read_exact_timeout(&mut tcp, &mut payload, timeout_dur)
+                .await
+                .is_none()
+            {
                 tcp = match connect_with_timeout(ip, port, timeout_ms).await {
                     Some(s) => s,
                     None => break,
@@ -77,16 +86,19 @@ impl Probe for KafkaProbe {
             }
 
             // debug: raw ApiVersions payload
-           
 
             if let Some(map) = parse_api_versions_response(&payload) {
-                
                 // Pretty-print and filter invalid entries, push evidence, bump confidence
                 if !map.is_empty() {
                     // Filter out entries where min > max (likely parser artifacts)
-                    let mut entries: Vec<(i16, i16, i16)> = map.iter()
+                    let mut entries: Vec<(i16, i16, i16)> = map
+                        .iter()
                         .filter_map(|(&k, &(min, max))| {
-                            if min <= max { Some((k, min, max)) } else { None }
+                            if min <= max {
+                                Some((k, min, max))
+                            } else {
+                                None
+                            }
                         })
                         .map(|(k, min, max)| (k, min, max))
                         .collect();
@@ -134,12 +146,14 @@ impl Probe for KafkaProbe {
                         }
                     }
 
-                    let numeric = entries.iter()
+                    let numeric = entries
+                        .iter()
                         .map(|(k, min, max)| format!("{}:{}-{}", k, min, max))
                         .collect::<Vec<_>>()
                         .join(", ");
 
-                    let friendly = entries.iter()
+                    let friendly = entries
+                        .iter()
                         .map(|(k, min, max)| {
                             let name = api_name(*k);
                             if name == "Unknown" {
@@ -188,7 +202,10 @@ impl Probe for KafkaProbe {
 
         let metadata_body = metadata_request_body();
         let metadata_req = build_kafka_request(3, 0, 2, "rust-scan", &metadata_body);
-        if timeout(timeout_dur, tcp2.write_all(&metadata_req)).await.is_err() {
+        if timeout(timeout_dur, tcp2.write_all(&metadata_req))
+            .await
+            .is_err()
+        {
             push_line(&mut evidence, "kafka", "write_error");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
             fp.confidence = confidence;
@@ -197,7 +214,10 @@ impl Probe for KafkaProbe {
 
         // Read metadata response length + payload
         let mut len_buf = [0u8; 4];
-        if read_exact_timeout(&mut tcp2, &mut len_buf, timeout_dur).await.is_none() {
+        if read_exact_timeout(&mut tcp2, &mut len_buf, timeout_dur)
+            .await
+            .is_none()
+        {
             push_line(&mut evidence, "kafka", "read_error");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
             fp.confidence = confidence;
@@ -218,7 +238,10 @@ impl Probe for KafkaProbe {
         }
 
         let mut payload = vec![0u8; len];
-        if read_exact_timeout(&mut tcp2, &mut payload, timeout_dur).await.is_none() {
+        if read_exact_timeout(&mut tcp2, &mut payload, timeout_dur)
+            .await
+            .is_none()
+        {
             push_line(&mut evidence, "kafka", "read_error");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
             fp.confidence = confidence;
@@ -226,8 +249,15 @@ impl Probe for KafkaProbe {
         }
 
         // debug: show raw metadata payload as hex AFTER we've read it
-        eprintln!("kafka metadata payload len={} hex={}", payload.len(),
-            payload.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""));
+        eprintln!(
+            "kafka metadata payload len={} hex={}",
+            payload.len(),
+            payload
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join("")
+        );
 
         // Minimal metadata parsing: correlation id, brokers array, optional cluster_id/controller_id
         let mut cursor = Cursor::new(&payload[..]);
@@ -284,7 +314,8 @@ impl Probe for KafkaProbe {
                                 cluster_id = Some(String::from_utf8_lossy(&cbytes).to_string());
                             }
                         }
-                        let rem_after = (cursor.get_ref().len() as i64) - (cursor.position() as i64);
+                        let rem_after =
+                            (cursor.get_ref().len() as i64) - (cursor.position() as i64);
                         if rem_after >= 4 {
                             if let Ok(cid) = ReadBytesExt::read_i32::<BigEndian>(&mut cursor) {
                                 controller_id = Some(cid);
@@ -306,8 +337,12 @@ impl Probe for KafkaProbe {
 
         push_line(&mut evidence, "kafka", "metadata_response");
         push_line(&mut evidence, "kafka_brokers", &brokers.join(", "));
-        if let Some(cid) = cluster_id { push_line(&mut evidence, "kafka_cluster_id", cid.as_str()); }
-        if let Some(ctrl) = controller_id { push_line(&mut evidence, "kafka_controller_id", &ctrl.to_string()); }
+        if let Some(cid) = cluster_id {
+            push_line(&mut evidence, "kafka_cluster_id", cid.as_str());
+        }
+        if let Some(ctrl) = controller_id {
+            push_line(&mut evidence, "kafka_controller_id", &ctrl.to_string());
+        }
 
         // Return fingerprint with confidence
         let mut fp = ServiceFingerprint::from_banner(ip, port, "kafka", evidence);
@@ -315,21 +350,39 @@ impl Probe for KafkaProbe {
         Some(fp)
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
-            ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000),
-        ).await
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![9092] }
-    fn name(&self) -> &'static str { "kafka" }
+    fn ports(&self) -> Vec<u16> {
+        vec![9092]
+    }
+    fn name(&self) -> &'static str {
+        "kafka"
+    }
 }
 
 // ----------------- helper functions -----------------
 
-fn build_kafka_request(api_key: i16, api_version: i16, correlation_id: i32, client_id: &str, body: &[u8]) -> Vec<u8> {
+fn build_kafka_request(
+    api_key: i16,
+    api_version: i16,
+    correlation_id: i32,
+    client_id: &str,
+    body: &[u8],
+) -> Vec<u8> {
     let mut payload = Vec::new();
     WriteBytesExt::write_i16::<BigEndian>(&mut payload, api_key).unwrap();
     WriteBytesExt::write_i16::<BigEndian>(&mut payload, api_version).unwrap();
@@ -343,22 +396,28 @@ fn build_kafka_request(api_key: i16, api_version: i16, correlation_id: i32, clie
     frame
 }
 
-async fn read_exact_timeout(tcp: &mut (impl AsyncRead + Unpin), buf: &mut [u8], timeout_dur: Duration) -> Option<()> {
+async fn read_exact_timeout(
+    tcp: &mut (impl AsyncRead + Unpin),
+    buf: &mut [u8],
+    timeout_dur: Duration,
+) -> Option<()> {
     let mut read = 0usize;
     while read < buf.len() {
         let n = match timeout(timeout_dur, tcp.read(&mut buf[read..])).await {
             Ok(Ok(n)) => n,
             _ => return None,
         };
-        if n == 0 { return None; }
+        if n == 0 {
+            return None;
+        }
         read += n;
     }
     Some(())
 }
 
 fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)>> {
-    use std::io::Cursor;
     use byteorder::{BigEndian, ReadBytesExt};
+    use std::io::Cursor;
 
     // read uvarint by advancing cursor
     fn read_uvarint(cursor: &mut Cursor<&[u8]>) -> Option<u64> {
@@ -369,12 +428,16 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
             let b = *cursor.get_ref().get(idx)?;
             cursor.set_position(cursor.position() + 1);
             if b < 0x80 {
-                if s >= 64 { return None; }
+                if s >= 64 {
+                    return None;
+                }
                 return Some(x | ((b as u64) << s));
             }
             x |= ((b & 0x7F) as u64) << s;
             s += 7;
-            if s >= 64 { return None; }
+            if s >= 64 {
+                return None;
+            }
         }
     }
 
@@ -388,12 +451,16 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
             off += 1;
             read += 1;
             if b < 0x80 {
-                if s >= 64 { return None; }
+                if s >= 64 {
+                    return None;
+                }
                 return Some((x | ((b as u64) << s), read));
             }
             x |= ((b & 0x7F) as u64) << s;
             s += 7;
-            if s >= 64 { return None; }
+            if s >= 64 {
+                return None;
+            }
         }
     }
 
@@ -404,7 +471,9 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
             let _tag = read_uvarint(cursor)?;
             let size = read_uvarint(cursor)?;
             let new_pos = cursor.position() + size;
-            if new_pos > cursor.get_ref().len() as u64 { return None; }
+            if new_pos > cursor.get_ref().len() as u64 {
+                return None;
+            }
             cursor.set_position(new_pos);
         }
         Some(())
@@ -438,7 +507,9 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
                         }
                         // skip top-level tagged fields
                         skip_tagged(&mut cursor)?;
-                        if !map.is_empty() { return Some(map); } // flexible is authoritative if it parsed entries
+                        if !map.is_empty() {
+                            return Some(map);
+                        } // flexible is authoritative if it parsed entries
                     }
                 }
             }
@@ -464,7 +535,9 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
                 let max = ReadBytesExt::read_i16::<BigEndian>(&mut cursor).ok()?;
                 map.insert(api_key, (min, max));
             }
-            if !map.is_empty() { return Some(map); }
+            if !map.is_empty() {
+                return Some(map);
+            }
         }
         None
     };
@@ -475,7 +548,9 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
         let mut best_count = 0usize;
 
         for start in 8usize..=12usize {
-            if payload.len() <= start + 4 { continue; }
+            if payload.len() <= start + 4 {
+                continue;
+            }
             // try to read a 4-byte BE count at this start
             let maybe_count = i32::from_be_bytes([
                 *payload.get(start)?,
@@ -484,18 +559,30 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
                 *payload.get(start + 3)?,
             ]) as isize;
 
-            if maybe_count >= 0 && (start + (maybe_count as usize) * 6) <= payload.len() && (maybe_count as usize) <= 100_000 {
+            if maybe_count >= 0
+                && (start + (maybe_count as usize) * 6) <= payload.len()
+                && (maybe_count as usize) <= 100_000
+            {
                 let mut map = HashMap::new();
                 let mut ok = true;
                 let mut off = start + 4;
                 for _ in 0..(maybe_count as usize) {
-                    if off + 6 > payload.len() { ok = false; break; }
+                    if off + 6 > payload.len() {
+                        ok = false;
+                        break;
+                    }
                     let api_key = i16::from_be_bytes([payload[off], payload[off + 1]]);
                     let min = i16::from_be_bytes([payload[off + 2], payload[off + 3]]);
                     let max = i16::from_be_bytes([payload[off + 4], payload[off + 5]]);
                     off += 6;
-                    if min > max { ok = false; break; }
-                    if api_key < 0 || api_key > 200 { ok = false; break; }
+                    if min > max {
+                        ok = false;
+                        break;
+                    }
+                    if api_key < 0 || api_key > 200 {
+                        ok = false;
+                        break;
+                    }
                     map.insert(api_key, (min, max));
                 }
                 if ok && map.len() > best_count {
@@ -526,14 +613,20 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
             }
         }
 
-        if best_count > 0 { Some(best_map) } else { None }
+        if best_count > 0 {
+            Some(best_map)
+        } else {
+            None
+        }
     };
 
     // --- Merge results: prefer canonical, then flexible, then scanned ---
     let mut merged: HashMap<i16, (i16, i16)> = HashMap::new();
 
     if let Some(canon) = canonical_map_opt {
-        for (k, v) in canon.into_iter() { merged.insert(k, v); }
+        for (k, v) in canon.into_iter() {
+            merged.insert(k, v);
+        }
     }
 
     if let Some(flex) = flexible_map_opt {
@@ -548,13 +641,12 @@ fn parse_api_versions_response(payload: &[u8]) -> Option<HashMap<i16, (i16, i16)
         }
     }
 
-    if merged.is_empty() { None } else { Some(merged) }
+    if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    }
 }
-
-
-
-
-
 
 fn metadata_request_body() -> Vec<u8> {
     let mut b = Vec::new();

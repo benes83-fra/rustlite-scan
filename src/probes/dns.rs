@@ -1,18 +1,25 @@
-use async_trait::async_trait;
-use tokio::net::UdpSocket;
-use std::net::SocketAddr;
-use std::time::Duration;
+use super::Probe;
 use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
-use super::Probe;
+use async_trait::async_trait;
+use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::net::UdpSocket;
 
 pub struct DnsProbe;
 
 #[async_trait]
 impl Probe for DnsProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
@@ -25,20 +32,23 @@ impl Probe for DnsProbe {
         socket.send(&query).await.ok()?;
 
         let mut buf = [0u8; 512];
-        let n =match  tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            socket.recv(&mut buf)
-        ).await {
+        let n = match tokio::time::timeout(Duration::from_millis(timeout_ms), socket.recv(&mut buf))
+            .await
+        {
             Ok(Ok(n)) => n,
-                    _ => return None, // timeout or recv error
+            _ => return None, // timeout or recv error
         };
 
         let evidence = parse_dns_response(&buf[..n]);
         Some(ServiceFingerprint::from_banner(ip, port, "dns", evidence))
     }
 
-    fn ports(&self) -> Vec<u16> { vec![53] }
-    fn name(&self) -> &'static str { "dns" }
+    fn ports(&self) -> Vec<u16> {
+        vec![53]
+    }
+    fn name(&self) -> &'static str {
+        "dns"
+    }
 }
 
 // Helper: build a DNS query packet for version.bind
@@ -75,5 +85,3 @@ fn parse_dns_response(resp: &[u8]) -> String {
     let rcode = resp[3] & 0x0F;
     format!("DNS response code {}", rcode)
 }
-
-

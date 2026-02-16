@@ -1,14 +1,14 @@
 mod cli;
-mod types;
 mod netutils;
-mod scan;
-mod probes;
-mod utils;
 mod os;
+mod probes;
+mod scan;
 mod service;
-use tracing_subscriber;
-use tracing_subscriber::{EnvFilter};
+mod types;
+mod utils;
 use anyhow::Result;
+use tracing_subscriber;
+use tracing_subscriber::EnvFilter;
 
 use cli::Cli;
 pub fn init_tracing() {

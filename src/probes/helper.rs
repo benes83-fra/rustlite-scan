@@ -1,7 +1,7 @@
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::time::Duration;
 use openssl::ssl::{SslConnector, SslMethod};
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 
 use crate::probes::tls::fingerprint_tls;
@@ -20,16 +20,19 @@ pub async fn _probe_exchange_tls(
     let addr = format!("{}:{}", ip, port);
 
     // Connect with timeout
-    let mut stream = match tokio::time::timeout(
-        Duration::from_millis(timeout_ms),
-        TcpStream::connect(&addr),
-    ).await {
-        Ok(Ok(s)) => s,
-        _ => return None,
-    };
+    let mut stream =
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), TcpStream::connect(&addr))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            _ => return None,
+        };
 
     // Write request with a short timeout
-    if tokio::time::timeout(Duration::from_millis(500), stream.write_all(request)).await.is_err() {
+    if tokio::time::timeout(Duration::from_millis(500), stream.write_all(request))
+        .await
+        .is_err()
+    {
         return None;
     }
 
@@ -53,9 +56,13 @@ pub async fn _probe_exchange_tls(
             match upgrade_to_tls(stream, sni).await {
                 Ok(tls_stream) => {
                     // fingerprint_tls should return Option-like structure with .evidence
-                    if let Some(fp) = fingerprint_tls(ip, port, protocol, evidence.clone(), tls_stream).await {
+                    if let Some(fp) =
+                        fingerprint_tls(ip, port, protocol, evidence.clone(), tls_stream).await
+                    {
                         if let Some(ev) = fp.evidence {
-                            if !evidence.is_empty() { evidence.push('\n'); }
+                            if !evidence.is_empty() {
+                                evidence.push('\n');
+                            }
                             evidence.push_str(&ev);
                         }
                     }
@@ -73,8 +80,14 @@ pub async fn _probe_exchange_tls(
 }
 
 pub async fn upgrade_to_tls(stream: TcpStream, sni: &str) -> Result<SslStream<TcpStream>, ()> {
-    let connector = SslConnector::builder(SslMethod::tls()).map_err(|_| ())?.build();
-    let ssl = connector.configure().map_err(|_| ())?.into_ssl(sni).map_err(|_| ())?;
+    let connector = SslConnector::builder(SslMethod::tls())
+        .map_err(|_| ())?
+        .build();
+    let ssl = connector
+        .configure()
+        .map_err(|_| ())?
+        .into_ssl(sni)
+        .map_err(|_| ())?;
     let mut tls = SslStream::new(ssl, stream).map_err(|_| ())?;
     let mut pinned = std::pin::Pin::new(&mut tls);
     pinned.as_mut().connect().await.map_err(|_| ())?;
@@ -90,19 +103,37 @@ pub async fn connect_with_timeout(ip: &str, port: u16, timeout_ms: u64) -> Optio
 }
 
 pub fn push_line(out: &mut String, label: &str, value: &str) {
-    if !out.is_empty() { out.push('\n'); }
+    if !out.is_empty() {
+        out.push('\n');
+    }
     out.push_str(label);
     out.push_str(": ");
     out.push_str(value);
 }
 /// Write request to stream and read a single response with timeouts.
 /// Returns `Some(Vec<u8>)` when a non-empty response was read, otherwise `None`.
-pub async fn send_and_read(stream: &mut TcpStream, request: &[u8], write_timeout_ms: u64, read_timeout_ms: u64) -> Option<Vec<u8>> {
-    if tokio::time::timeout(Duration::from_millis(write_timeout_ms), stream.write_all(request)).await.is_err() {
+pub async fn send_and_read(
+    stream: &mut TcpStream,
+    request: &[u8],
+    write_timeout_ms: u64,
+    read_timeout_ms: u64,
+) -> Option<Vec<u8>> {
+    if tokio::time::timeout(
+        Duration::from_millis(write_timeout_ms),
+        stream.write_all(request),
+    )
+    .await
+    .is_err()
+    {
         return None;
     }
     let mut buf = vec![0u8; 8192];
-    match tokio::time::timeout(Duration::from_millis(read_timeout_ms), stream.read(&mut buf)).await {
+    match tokio::time::timeout(
+        Duration::from_millis(read_timeout_ms),
+        stream.read(&mut buf),
+    )
+    .await
+    {
         Ok(Ok(n)) if n > 0 => {
             buf.truncate(n);
             Some(buf)

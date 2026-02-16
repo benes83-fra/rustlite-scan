@@ -1,8 +1,8 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
 
 pub struct RtspProbe;
 
@@ -77,14 +77,26 @@ impl Probe for RtspProbe {
         Some(fp)
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
-            ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000),
-        ).await
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![554,8554] }
-    fn name(&self) -> &'static str { "rtsp" }
+    fn ports(&self) -> Vec<u16> {
+        vec![554, 8554]
+    }
+    fn name(&self) -> &'static str {
+        "rtsp"
+    }
 }

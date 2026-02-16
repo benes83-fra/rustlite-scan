@@ -1,13 +1,12 @@
-use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration, sleep};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
-use crate::probes::ProbeContext;
-use crate::service::ServiceFingerprint;
 use super::Probe;
 use crate::probes::helper::push_line;
-
+use crate::probes::ProbeContext;
+use crate::service::ServiceFingerprint;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::time::{sleep, timeout, Duration};
 
 /// - Sends a conservative SMB1 Negotiate request (dialect "NT LM 0.12")
 /// - Detects SMB1 vs SMB2/3 by response signature
@@ -72,31 +71,51 @@ impl SmbProbe {
     }
 
     /// Send bytes over TCP and wait for a response (with retries). Returns received bytes or None.
-    async fn send_and_recv_tcp(addr: &str, req: &[u8], timeout_ms: u64, attempts: usize) -> Option<Vec<u8>> {
+    async fn send_and_recv_tcp(
+        addr: &str,
+        req: &[u8],
+        timeout_ms: u64,
+        attempts: usize,
+    ) -> Option<Vec<u8>> {
         // Resolve and connect with timeout
         let mut rng = StdRng::from_entropy();
         for attempt in 1..=attempts {
-            
-            match timeout(Duration::from_millis(CONNECT_TIMEOUT_MS), TcpStream::connect(addr)).await {
+            match timeout(
+                Duration::from_millis(CONNECT_TIMEOUT_MS),
+                TcpStream::connect(addr),
+            )
+            .await
+            {
                 Ok(Ok(stream)) => {
-                    
                     if let Err(e) = stream.try_write(req) {
-                       
                         return None;
                     }
                     // wait for response
                     let mut buf = vec![0u8; 8192];
-                    match timeout(Duration::from_millis(timeout_ms.max(IO_TIMEOUT_MS)), stream.readable()).await {
+                    match timeout(
+                        Duration::from_millis(timeout_ms.max(IO_TIMEOUT_MS)),
+                        stream.readable(),
+                    )
+                    .await
+                    {
                         Ok(Ok(())) => {
                             // try to read
                             match stream.try_read(&mut buf) {
                                 Ok(n) if n > 0 => {
                                     buf.truncate(n);
-                                    if DEBUG { eprintln!("SMB: recv {} bytes preview={:02x?}", n, &buf[..std::cmp::min(128, buf.len())]); }
+                                    if DEBUG {
+                                        eprintln!(
+                                            "SMB: recv {} bytes preview={:02x?}",
+                                            n,
+                                            &buf[..std::cmp::min(128, buf.len())]
+                                        );
+                                    }
                                     return Some(buf);
                                 }
                                 Ok(_) => {
-                                    if DEBUG { eprintln!("SMB: read returned 0 bytes"); }
+                                    if DEBUG {
+                                        eprintln!("SMB: read returned 0 bytes");
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("SMB: read error: {}", e);
@@ -107,7 +126,9 @@ impl SmbProbe {
                             eprintln!("SMB: readable wait error: {}", e);
                         }
                         Err(_) => {
-                            if DEBUG { eprintln!("SMB: recv timeout on attempt {}", attempt); }
+                            if DEBUG {
+                                eprintln!("SMB: recv timeout on attempt {}", attempt);
+                            }
                         }
                     }
                 }
@@ -115,7 +136,9 @@ impl SmbProbe {
                     eprintln!("SMB: connect error: {}", e);
                 }
                 Err(_) => {
-                    if DEBUG { eprintln!("SMB: connect timed out on attempt {}", attempt); }
+                    if DEBUG {
+                        eprintln!("SMB: connect timed out on attempt {}", attempt);
+                    }
                 }
             }
 
@@ -139,7 +162,7 @@ impl SmbProbe {
             // If NetBIOS header present (first byte 0x00), signature starts at offset 4
             let sig_off = if resp[0] == 0x00 { 4usize } else { 0usize };
             if resp.len() > sig_off + 3 {
-                let sig = &resp[sig_off .. sig_off + 4];
+                let sig = &resp[sig_off..sig_off + 4];
                 if sig == [0xFF, b'S', b'M', b'B'] {
                     // SMB1
                     // Try to find ASCII strings in the payload (NativeOS, NativeLanMan)
@@ -153,10 +176,15 @@ impl SmbProbe {
                     // Try to find a 16-byte Server GUID in the response (common in SMB2 NEGOTIATE)
                     if resp.len() >= sig_off + 64 {
                         // heuristic: server GUID often appears in negotiate response near offset ~40..56
-                        let guid_slice = &resp[sig_off + 40 .. std::cmp::min(resp.len(), sig_off + 56)];
+                        let guid_slice =
+                            &resp[sig_off + 40..std::cmp::min(resp.len(), sig_off + 56)];
                         if guid_slice.len() >= 16 {
                             // format as hex
-                            let guid_hex = guid_slice[..16].iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
+                            let guid_hex = guid_slice[..16]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join("");
                             evidence.push(("SMB2_server_guid".to_string(), guid_hex));
                         }
                     }
@@ -255,7 +283,9 @@ impl SmbProbe {
         // ClientGuid (16) - random
         let mut rng = StdRng::from_entropy();
         let mut guid = [0u8; 16];
-        for b in guid.iter_mut() { *b = rng.gen(); }
+        for b in guid.iter_mut() {
+            *b = rng.gen();
+        }
         payload.extend_from_slice(&guid);
         // NegotiateContextOffset (4) and NegotiateContextCount (2) and Reserved (2)
         // For simplicity we won't use contexts; set offsets to 0
@@ -283,7 +313,7 @@ impl SmbProbe {
     /// Returns (dialect_hex_opt, server_guid_hex_opt, ascii_strings).
     /// Map common SMB2 dialect hex values to friendly names.
     pub fn smb2_dialect_name(dialect_hex: &str) -> Option<&'static str> {
-        println! ("Dialect_Hex :{:?}",dialect_hex);
+        println!("Dialect_Hex :{:?}", dialect_hex);
         match dialect_hex {
             "0x0202" => Some("SMB 2.0.2"),
             "0x0210" => Some("SMB 2.1"),
@@ -296,7 +326,15 @@ impl SmbProbe {
 
     /// Spec-aware SMB2 NEGOTIATE parser.
     /// Returns (dialect_hex_opt, dialect_name_opt, server_guid_opt, capabilities_vec, ascii_strings)
-    fn parse_smb2_negotiate_spec(resp: &[u8]) -> (Option<String>, Option<String>, Option<String>, Vec<String>, Vec<String>) {
+    fn parse_smb2_negotiate_spec(
+        resp: &[u8],
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Vec<String>,
+        Vec<String>,
+    ) {
         // 1) find SMB2 signature (0xFE 'S' 'M' 'B')
         let payload_len = if resp.len() >= 4 {
             ((resp[1] as usize) << 16) | ((resp[2] as usize) << 8) | (resp[3] as usize)
@@ -306,7 +344,6 @@ impl SmbProbe {
         let total_len = resp.len();
         let sig_pos = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
         if sig_pos.is_none() {
-           
             // no SMB2 signature: fallback to ascii extraction
             let ascii = SmbProbe::extract_ascii_strings(resp);
             return (None, None, None, Vec::new(), ascii);
@@ -314,23 +351,25 @@ impl SmbProbe {
         let sig_off = sig_pos.unwrap();
         let body_off = sig_off + 4 + 64;
         let mut dialect_hex: Option<String> = None;
-        let available_body = if payload_len > 64 { payload_len - 64 } else { 0 };
-        
-        if available_body >= 6 && total_len >=body_off + 6{
+        let available_body = if payload_len > 64 {
+            payload_len - 64
+        } else {
+            0
+        };
+
+        if available_body >= 6 && total_len >= body_off + 6 {
             let dialect_le = u16::from_le_bytes([resp[body_off + 4], resp[body_off + 5]]);
             let dialect_hex1 = format!("0x{:04x}", dialect_le);
-           
-            
-        }else {
-        // 2) dialect detection: scan for known dialect u16 values (little-endian) in the response
-            let known_dialects: [u16;5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
-            
+        } else {
+            // 2) dialect detection: scan for known dialect u16 values (little-endian) in the response
+            let known_dialects: [u16; 5] = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
+
             let payload_start = 4usize;
             let payload_end = std::cmp::min(total_len, 4 + payload_len);
-            
+
             for i in (sig_off + 4)..resp.len().saturating_sub(1) {
-                let v = u16::from_le_bytes([resp[i], resp[i+1]]);
-                
+                let v = u16::from_le_bytes([resp[i], resp[i + 1]]);
+
                 if known_dialects.contains(&v) {
                     dialect_hex = Some(format!("0x{:04x}", v));
                     break;
@@ -347,14 +386,20 @@ impl SmbProbe {
         // 3) server GUID extraction: scan for a 16-byte window that is not all zeros/FF and has some entropy
         let mut server_guid: Option<String> = None;
         for i in sig_off..resp.len().saturating_sub(15) {
-            let window = &resp[i..i+16];
+            let window = &resp[i..i + 16];
             let all_zero = window.iter().all(|&b| b == 0);
             let all_ff = window.iter().all(|&b| b == 0xFF);
-            if all_zero || all_ff { continue; }
+            if all_zero || all_ff {
+                continue;
+            }
             // require at least 4 nontrivial bytes to avoid false positives
             let nontrivial = window.iter().filter(|&&b| b != 0 && b != 0xFF).count();
             if nontrivial >= 4 {
-                let hex = window.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
+                let hex = window
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join("");
                 server_guid = Some(hex);
                 break;
             }
@@ -363,19 +408,21 @@ impl SmbProbe {
         // 4) capabilities detection: scan for any 4-byte little-endian value and test known capability bits
         // Known SMB2 global capability bits (common values)
         let capability_map: &[(u32, &str)] = &[
-            (0x00000001, "DFS"),                 // SMB2_GLOBAL_CAP_DFS
-            (0x00000002, "LEASING"),             // SMB2_GLOBAL_CAP_LEASING
-            (0x00000004, "LARGE_MTU"),           // SMB2_GLOBAL_CAP_LARGE_MTU
-            (0x00000008, "MULTI_CHANNEL"),       // SMB2_GLOBAL_CAP_MULTI_CHANNEL
-            (0x00000010, "PERSISTENT_HANDLES"),  // SMB2_GLOBAL_CAP_PERSISTENT_HANDLES
-            (0x00000020, "DIRECTORY_LEASING"),   // SMB2_GLOBAL_CAP_DIRECTORY_LEASING
-            (0x00000040, "ENCRYPTION"),          // SMB2_GLOBAL_CAP_ENCRYPTION (common flag)
+            (0x00000001, "DFS"),                // SMB2_GLOBAL_CAP_DFS
+            (0x00000002, "LEASING"),            // SMB2_GLOBAL_CAP_LEASING
+            (0x00000004, "LARGE_MTU"),          // SMB2_GLOBAL_CAP_LARGE_MTU
+            (0x00000008, "MULTI_CHANNEL"),      // SMB2_GLOBAL_CAP_MULTI_CHANNEL
+            (0x00000010, "PERSISTENT_HANDLES"), // SMB2_GLOBAL_CAP_PERSISTENT_HANDLES
+            (0x00000020, "DIRECTORY_LEASING"),  // SMB2_GLOBAL_CAP_DIRECTORY_LEASING
+            (0x00000040, "ENCRYPTION"),         // SMB2_GLOBAL_CAP_ENCRYPTION (common flag)
         ];
         let mut capabilities_found: Vec<String> = Vec::new();
         // scan windows of 4 bytes and test bits
         for i in sig_off..resp.len().saturating_sub(3) {
-            let v = u32::from_le_bytes([resp[i], resp[i+1], resp[i+2], resp[i+3]]);
-            if v == 0 { continue; }
+            let v = u32::from_le_bytes([resp[i], resp[i + 1], resp[i + 2], resp[i + 3]]);
+            if v == 0 {
+                continue;
+            }
             for &(mask, name) in capability_map {
                 if (v & mask) != 0 {
                     if !capabilities_found.iter().any(|s| s == name) {
@@ -391,21 +438,31 @@ impl SmbProbe {
         // 5) ASCII substrings for additional evidence
         let ascii = SmbProbe::extract_ascii_strings(resp);
         // 6) friendly dialect name lookup
-        let dialect_name = dialect_hex.as_ref().and_then(|h| Self::smb2_dialect_name(h).map(|s| s.to_string()));
+        let dialect_name = dialect_hex
+            .as_ref()
+            .and_then(|h| Self::smb2_dialect_name(h).map(|s| s.to_string()));
 
-        (dialect_hex, dialect_name, server_guid, capabilities_found, ascii)
+        (
+            dialect_hex,
+            dialect_name,
+            server_guid,
+            capabilities_found,
+            ascii,
+        )
     }
 
-    
     /// Read NetBIOS header then exact SMB2 payload from the stream.
-    async fn read_smb2_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn read_smb2_response(
+        stream: &mut TcpStream,
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut nb = [0u8; 4];
-      
+
         let to = Duration::from_millis(timeout_ms);
         timeout(to, stream.read_exact(&mut nb)).await??;
-     
+
         let len = ((nb[1] as usize) << 16) | ((nb[2] as usize) << 8) | (nb[3] as usize);
-         let mut payload = vec![0u8; len];
+        let mut payload = vec![0u8; len];
         timeout(to, stream.read_exact(&mut payload)).await??;
         let mut full = Vec::with_capacity(4 + len);
         full.extend_from_slice(&nb);
@@ -417,27 +474,53 @@ impl SmbProbe {
     /// Returns (status_opt, message_id_opt, session_id_opt, tree_id_opt)
     fn parse_smb2_header(resp: &[u8]) -> (Option<u32>, Option<u64>, Option<u64>, Option<u32>) {
         let sig_pos = resp.windows(4).position(|w| w == [0xFE, b'S', b'M', b'B']);
-        if sig_pos.is_none() { return (None, None, None, None); }
+        if sig_pos.is_none() {
+            return (None, None, None, None);
+        }
         let off = sig_pos.unwrap();
-        if resp.len() < off + 64 { return (None, None, None, None); }
+        if resp.len() < off + 64 {
+            return (None, None, None, None);
+        }
         // right after finding sig_pos and off
-    
 
         // Status (4 bytes) at header offset 8..12 (little-endian)
-        let status = u32::from_le_bytes([resp[off + 8], resp[off + 9], resp[off + 10], resp[off + 11]]);
+        let status =
+            u32::from_le_bytes([resp[off + 8], resp[off + 9], resp[off + 10], resp[off + 11]]);
         // MessageId at off+28..off+36 (u64 LE)
         let message_id = u64::from_le_bytes([
-            resp[off + 28], resp[off + 29], resp[off + 30], resp[off + 31],
-            resp[off + 32], resp[off + 33], resp[off + 34], resp[off + 35],
+            resp[off + 28],
+            resp[off + 29],
+            resp[off + 30],
+            resp[off + 31],
+            resp[off + 32],
+            resp[off + 33],
+            resp[off + 34],
+            resp[off + 35],
         ]);
         // TreeId at off+24..off+28 (u32 LE)
-        let tree_id = u32::from_le_bytes([resp[off + 24], resp[off + 25], resp[off + 26], resp[off + 27]]);
+        let tree_id = u32::from_le_bytes([
+            resp[off + 24],
+            resp[off + 25],
+            resp[off + 26],
+            resp[off + 27],
+        ]);
         // SessionId at off+40..off+48 (u64 LE)
         let session_id = u64::from_le_bytes([
-            resp[off + 40], resp[off + 41], resp[off + 42], resp[off + 43],
-            resp[off + 44], resp[off + 45], resp[off + 46], resp[off + 47],
+            resp[off + 40],
+            resp[off + 41],
+            resp[off + 42],
+            resp[off + 43],
+            resp[off + 44],
+            resp[off + 45],
+            resp[off + 46],
+            resp[off + 47],
         ]);
-        (Some(status), Some(message_id), Some(session_id), Some(tree_id))
+        (
+            Some(status),
+            Some(message_id),
+            Some(session_id),
+            Some(tree_id),
+        )
     }
 
     /// Build a minimal SMB2 SESSION_SETUP request with an empty security buffer (anonymous).
@@ -508,7 +591,6 @@ impl SmbProbe {
         pkt
     }
 
-
     /// Build a minimal SMB2 TREE_CONNECT request for \\<host>\IPC$ using given session_id.
     /// path_utf16le should be the UTF-16LE encoded path bytes.
     /// Build a minimal, well-formed SMB2 TREE_CONNECT request for \\<host>\IPC$.
@@ -566,7 +648,6 @@ impl SmbProbe {
         pkt
     }
 
-
     /// Encode Rust string to UTF-16LE bytes for tree connect path.
     fn encode_utf16le(s: &str) -> Vec<u8> {
         let utf16: Vec<u16> = s.encode_utf16().collect();
@@ -581,53 +662,65 @@ impl SmbProbe {
     /// - addr: "ip:445"
     /// - timeout_ms: per-operation timeout
     /// - evidence: mutable String (use your push_line helper to append)
-    pub async fn probe_smb_sequence(addr: &str, timeout_ms: u64, evidence: &mut String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn probe_smb_sequence(
+        addr: &str,
+        timeout_ms: u64,
+        evidence: &mut String,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Connect once and reuse
         let conn_timeout = Duration::from_millis(timeout_ms);
         let mut stream = timeout(conn_timeout, TcpStream::connect(addr)).await??;
 
         // 1) NEGOTIATE (reuse your builder)
         let negotiate = SmbProbe::build_smb2_negotiate();
-       
+
         stream.write_all(&negotiate).await?;
         let resp_negotiate = SmbProbe::read_smb2_response(&mut stream, timeout_ms).await?;
-      
 
         // Parse and record lightweight negotiate evidence using your existing parser
-        let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp_negotiate);
-        if let Some(dh) = dialect_hex { push_line(evidence, "SMB2_dialect", &dh); }
-        if let Some(dn) = dialect_name { push_line(evidence, "SMB2_dialect_name", &dn); }
-        if let Some(g) = server_guid { push_line(evidence, "SMB2_server_guid", &g); }
-        if !capabilities.is_empty() { push_line(evidence, "SMB2_capabilities", &capabilities.join(", ")); }
-        for s in ascii { push_line(evidence, "SMB2_ascii", &s); }
+        let (dialect_hex, dialect_name, server_guid, capabilities, ascii) =
+            SmbProbe::parse_smb2_negotiate_spec(&resp_negotiate);
+        if let Some(dh) = dialect_hex {
+            push_line(evidence, "SMB2_dialect", &dh);
+        }
+        if let Some(dn) = dialect_name {
+            push_line(evidence, "SMB2_dialect_name", &dn);
+        }
+        if let Some(g) = server_guid {
+            push_line(evidence, "SMB2_server_guid", &g);
+        }
+        if !capabilities.is_empty() {
+            push_line(evidence, "SMB2_capabilities", &capabilities.join(", "));
+        }
+        for s in ascii {
+            push_line(evidence, "SMB2_ascii", &s);
+        }
 
         // 2) SESSION_SETUP (anonymous)
         let session_msgid: u64 = 1;
         let session_setup = SmbProbe::build_smb2_session_setup(session_msgid, 0, &[]);
         // After attempting session setup and detecting a non-success status or connection close:
-       
-       
+
         stream.write_all(&session_setup).await?;
-        let resp_session = match SmbProbe::read_smb2_response(&mut stream, timeout_ms).await{
-            Ok(sess) =>   {
-                                    eprintln!("SMB-IPC: session_setup recv {} bytes", sess.len());
-                                    sess
-            },
-                
-          
-            Err(s)   =>{
-                        push_line( evidence, "SMB2_session_ok", "false");
-                        push_line( evidence, "SMB2_session_denied", "anonymous_not_allowed");
-                       
-                        return Err(s);
-                        
-            },
+        let resp_session = match SmbProbe::read_smb2_response(&mut stream, timeout_ms).await {
+            Ok(sess) => {
+                eprintln!("SMB-IPC: session_setup recv {} bytes", sess.len());
+                sess
+            }
+
+            Err(s) => {
+                push_line(evidence, "SMB2_session_ok", "false");
+                push_line(evidence, "SMB2_session_denied", "anonymous_not_allowed");
+
+                return Err(s);
+            }
         };
-        
-        
-        
-        if DEBUG { eprintln!("SMB-IPC: session_setup recv {} bytes", resp_session.len()); }
-        let (status_opt, _msgid_opt, session_id_opt, _treeid_opt) = SmbProbe::parse_smb2_header(&resp_session);
+
+        if DEBUG {
+            eprintln!("SMB-IPC: session_setup recv {} bytes", resp_session.len());
+        }
+        let (status_opt, _msgid_opt, session_id_opt, _treeid_opt) =
+            SmbProbe::parse_smb2_header(&resp_session);
 
         if let Some(status) = status_opt {
             if status == 0 {
@@ -637,7 +730,11 @@ impl SmbProbe {
                 }
             } else {
                 push_line(evidence, "SMB2_session_ok", "false");
-                push_line(evidence, "SMB2_session_status", &format!("0x{:08x}", status));
+                push_line(
+                    evidence,
+                    "SMB2_session_status",
+                    &format!("0x{:08x}", status),
+                );
                 // stop here if session denied
                 return Ok(());
             }
@@ -653,11 +750,16 @@ impl SmbProbe {
         let path_utf16le = SmbProbe::encode_utf16le(&path);
         let tree_msgid: u64 = 2;
         let tree_connect = SmbProbe::build_smb2_tree_connect(tree_msgid, session_id, &path_utf16le);
-        if DEBUG { eprintln!("SMB-IPC: sending tree_connect to {}", path); }
+        if DEBUG {
+            eprintln!("SMB-IPC: sending tree_connect to {}", path);
+        }
         stream.write_all(&tree_connect).await?;
         let resp_tree = SmbProbe::read_smb2_response(&mut stream, timeout_ms).await?;
-        if DEBUG { eprintln!("SMB-IPC: tree_connect recv {} bytes", resp_tree.len()); }
-        let (status_tree_opt, _msgid_tree, _session_after, tree_id_opt) = SmbProbe::parse_smb2_header(&resp_tree);
+        if DEBUG {
+            eprintln!("SMB-IPC: tree_connect recv {} bytes", resp_tree.len());
+        }
+        let (status_tree_opt, _msgid_tree, _session_after, tree_id_opt) =
+            SmbProbe::parse_smb2_header(&resp_tree);
 
         if let Some(st) = status_tree_opt {
             if st == 0 {
@@ -678,14 +780,18 @@ impl SmbProbe {
 }
 // ---------------------- End additive SMB2 IPC probe ----------------------
 
-
-
-
 #[async_trait::async_trait]
 impl Probe for SmbProbe {
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, timeout_ms: u64) -> Option<ServiceFingerprint> {
@@ -694,7 +800,9 @@ impl Probe for SmbProbe {
         // Build SMB1 negotiate request (kept conservative)
         let req = SmbProbe::build_smb1_negotiate();
 
-        if DEBUG { eprintln!("SMB: sending negotiate ({} bytes) to {}", req.len(), addr); }
+        if DEBUG {
+            eprintln!("SMB: sending negotiate ({} bytes) to {}", req.len(), addr);
+        }
 
         // Try sending and receiving
         let resp = SmbProbe::send_and_recv_tcp(&addr, &req, timeout_ms, 2).await;
@@ -706,40 +814,49 @@ impl Probe for SmbProbe {
             None => {
                 // no response: record that we attempted and move on
                 // If SMB1 attempt produced no useful response or connection was closed, try SMB2 negotiate
-                       
-                        if DEBUG { eprintln!("SMB: trying SMB2 negotiate fallback"); }
-                        let req2 = SmbProbe::build_smb2_negotiate();
-                        if DEBUG { eprintln!("SMB: sending SMB2 negotiate ({} bytes) to {}", req2.len(), addr); }
-                        if let Some(_resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await {
-                            // parse SMB2 response
-                            /* 
-                            let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp2);
 
-                            if let Some(dh) = dialect_hex { push_line(&mut evidence, "SMB2_dialect", &dh); }
-                            if let Some(dn) = dialect_name { push_line(&mut evidence, "SMB2_dialect_name", &dn); }
-                            if let Some(g) = server_guid { push_line(&mut evidence, "SMB2_server_guid", &g); }
-                            if !capabilities.is_empty() {
-                                push_line(&mut evidence, "SMB2_capabilities", &capabilities.join(", "));
-                            }
-                            for s in ascii {
-                                push_line(&mut evidence, "SMB2_ascii", &s);
-                            }*/
-                            
-                            let enable_ipc_probe = true; // flip to false to disable
-                            if enable_ipc_probe {
-                                if let Err(e) = SmbProbe::probe_smb_sequence(&addr, timeout_ms, &mut evidence).await {
-                                    eprintln!("SMB IPC probe failed: {}", e);
-                                }
-                            }
-                            
+                if DEBUG {
+                    eprintln!("SMB: trying SMB2 negotiate fallback");
+                }
+                let req2 = SmbProbe::build_smb2_negotiate();
+                if DEBUG {
+                    eprintln!(
+                        "SMB: sending SMB2 negotiate ({} bytes) to {}",
+                        req2.len(),
+                        addr
+                    );
+                }
+                if let Some(_resp2) = SmbProbe::send_and_recv_tcp(&addr, &req2, timeout_ms, 2).await
+                {
+                    // parse SMB2 response
+                    /*
+                    let (dialect_hex, dialect_name, server_guid, capabilities, ascii) = SmbProbe::parse_smb2_negotiate_spec(&resp2);
 
-                            return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
-                        } else {
-                            // still no response from SMB2 either
-                            push_line(&mut evidence, "SMB_probe", "no_response");
-                            return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
+                    if let Some(dh) = dialect_hex { push_line(&mut evidence, "SMB2_dialect", &dh); }
+                    if let Some(dn) = dialect_name { push_line(&mut evidence, "SMB2_dialect_name", &dn); }
+                    if let Some(g) = server_guid { push_line(&mut evidence, "SMB2_server_guid", &g); }
+                    if !capabilities.is_empty() {
+                        push_line(&mut evidence, "SMB2_capabilities", &capabilities.join(", "));
+                    }
+                    for s in ascii {
+                        push_line(&mut evidence, "SMB2_ascii", &s);
+                    }*/
+
+                    let enable_ipc_probe = true; // flip to false to disable
+                    if enable_ipc_probe {
+                        if let Err(e) =
+                            SmbProbe::probe_smb_sequence(&addr, timeout_ms, &mut evidence).await
+                        {
+                            eprintln!("SMB IPC probe failed: {}", e);
                         }
+                    }
 
+                    return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
+                } else {
+                    // still no response from SMB2 either
+                    push_line(&mut evidence, "SMB_probe", "no_response");
+                    return Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence));
+                }
             }
         };
 
@@ -758,12 +875,20 @@ impl Probe for SmbProbe {
 
         // If we found nothing useful, include a short raw preview for debugging
         if evidence.is_empty() {
-            push_line(&mut evidence, "SMB_raw", &format!("{:02x?}", &resp[..std::cmp::min(128, resp.len())]));
+            push_line(
+                &mut evidence,
+                "SMB_raw",
+                &format!("{:02x?}", &resp[..std::cmp::min(128, resp.len())]),
+            );
         }
 
         Some(ServiceFingerprint::from_banner(ip, port, "smb", evidence))
     }
 
-    fn ports(&self) -> Vec<u16> { vec![445] }
-    fn name(&self) -> &'static str { "smb" }
+    fn ports(&self) -> Vec<u16> {
+        vec![445]
+    }
+    fn name(&self) -> &'static str {
+        "smb"
+    }
 }

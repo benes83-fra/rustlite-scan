@@ -1,5 +1,14 @@
-use crate::{probes::{Probe, ProbeContext, helper::{connect_with_timeout, push_line}}, service::ServiceFingerprint};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, time::*};
+use crate::{
+    probes::{
+        helper::{connect_with_timeout, push_line},
+        Probe, ProbeContext,
+    },
+    service::ServiceFingerprint,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::*,
+};
 
 pub struct RedisProbe;
 
@@ -52,13 +61,29 @@ impl Probe for RedisProbe {
         Some(ServiceFingerprint::from_banner(ip, port, "redis", evidence))
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         // Optional: support AUTH if ctx has password
-        self.probe(ip, port, ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000)).await
+        self.probe(
+            ip,
+            port,
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![6379] }
-    fn name(&self) -> &'static str { "redis" }
+    fn ports(&self) -> Vec<u16> {
+        vec![6379]
+    }
+    fn name(&self) -> &'static str {
+        "redis"
+    }
 }
 
 // --- helper types and functions ---
@@ -84,5 +109,9 @@ fn parse_info(resp: &str) -> Option<RedisInfo> {
             features.push("persistence".into());
         }
     }
-    Some(RedisInfo { version, mode, features })
+    Some(RedisInfo {
+        version,
+        mode,
+        features,
+    })
 }

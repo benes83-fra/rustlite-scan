@@ -1,11 +1,11 @@
-use serde::Serialize;
-use chrono::{Utc, DateTime};
 use crate::service::ServiceFingerprint;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 #[derive(Debug, Serialize, Clone)]
 pub struct PortResult {
     pub port: u16,
     pub protocol: &'static str,
-    pub state:  &'static str,
+    pub state: &'static str,
     pub banner: Option<String>,
 
     pub ttl: Option<u8>,
@@ -18,8 +18,6 @@ pub struct PortResult {
     pub sackok: Option<bool>,
     pub ecn: Option<bool>,
 }
-
-
 
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct UdpMetrics {
@@ -51,7 +49,6 @@ pub struct HostResult {
     pub fingerprints: Vec<ServiceFingerprint>,
 }
 
-
 #[derive(Debug, Serialize)]
 pub struct ProbeEvent {
     pub ts: DateTime<Utc>,
@@ -59,7 +56,7 @@ pub struct ProbeEvent {
     pub ip: String,
     pub port: u16,
     pub protocol: String, // "tcp" or "udp"
-    pub outcome: String,  // "sent", "recv", "timeout", "retry", "open", "closed", "open|filtered", "unknown"
+    pub outcome: String, // "sent", "recv", "timeout", "retry", "open", "closed", "open|filtered", "unknown"
     pub duration_ms: Option<u64>,
     pub banner: Option<String>,
 

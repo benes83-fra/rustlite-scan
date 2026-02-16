@@ -1,8 +1,8 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
+use md5::{Digest, Md5};
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
-use md5::{Md5, Digest};
 
 pub struct RadiusProbe;
 
@@ -96,7 +96,11 @@ impl Probe for RadiusProbe {
         let identifier = resp[1];
         let resp_len = u16::from_be_bytes([resp[2], resp[3]]);
 
-        push_line(&mut evidence, "radius_identifier", &format!("{}", identifier));
+        push_line(
+            &mut evidence,
+            "radius_identifier",
+            &format!("{}", identifier),
+        );
         push_line(&mut evidence, "radius_length", &format!("{}", resp_len));
 
         let code_str = match code {

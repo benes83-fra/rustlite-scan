@@ -1,25 +1,30 @@
 // src/probes/tls.rs
-use async_trait::async_trait;
 use crate::probes::ProbeContext;
 use crate::service::ServiceFingerprint;
-
+use async_trait::async_trait;
 
 use super::Probe;
+use openssl::nid::Nid;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use openssl::x509::X509Ref;
 use std::net::TcpStream;
 use tokio_openssl::SslStream;
-use openssl::x509::{ X509Ref};
-use openssl::nid::Nid;
 use x509_parser::prelude::*;
 
 pub struct TlsProbe;
 
 #[async_trait]
 impl Probe for TlsProbe {
-    
-    async fn probe_with_ctx (&self, ip : &str , port :u16, ctx :ProbeContext) -> Option <ServiceFingerprint>{
-        
-        let timeout_ms = ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000);
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
+        let timeout_ms = ctx
+            .get("timeout_ms")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2000);
         self.probe(ip, port, timeout_ms).await
     }
     async fn probe(&self, ip: &str, port: u16, _timeout_ms: u64) -> Option<ServiceFingerprint> {
@@ -43,7 +48,6 @@ impl Probe for TlsProbe {
         evidence.push_str(&format!("tls_negotiation: {}\n", neg_str));
         evidence.push_str(&format!("tls_ja3s_like: {}\n", ja3s_like));
 
-
         // Grab peer cert
         let cert = ssl_stream.ssl().peer_certificate()?;
         let der = cert.to_der().ok()?;
@@ -52,7 +56,9 @@ impl Probe for TlsProbe {
         let (_, parsed) = parse_x509_certificate(&der).ok()?;
 
         // Extract CN
-        let subject_cn = parsed.subject().iter_common_name()
+        let subject_cn = parsed
+            .subject()
+            .iter_common_name()
             .next()
             .and_then(|cn| cn.as_str().ok())
             .unwrap_or("")
@@ -69,17 +75,16 @@ impl Probe for TlsProbe {
         }
 
         // Preserve your existing SAN + CN logic
-            let mut fp = ServiceFingerprint::from_tls_cert(ip, port, subject_cn, sans);
+        let mut fp = ServiceFingerprint::from_tls_cert(ip, port, subject_cn, sans);
 
-            // Append our new evidence to the existing evidence
-            if let Some(old) = fp.evidence.take() {
-                fp.evidence = Some(format!("{}\n{}", evidence, old));
-            } else {
-                fp.evidence = Some(evidence);
-            }
+        // Append our new evidence to the existing evidence
+        if let Some(old) = fp.evidence.take() {
+            fp.evidence = Some(format!("{}\n{}", evidence, old));
+        } else {
+            fp.evidence = Some(evidence);
+        }
 
-            Some(fp)
-
+        Some(fp)
     }
 
     fn ports(&self) -> Vec<u16> {
@@ -96,7 +101,7 @@ pub async fn fingerprint_tls(
     port: u16,
     proto_name: &str,
     negotiation_info: String,
-    tls_stream:  SslStream<tokio::net::TcpStream>,
+    tls_stream: SslStream<tokio::net::TcpStream>,
 ) -> Option<ServiceFingerprint> {
     let mut evidence = String::new();
     evidence.push_str(&negotiation_info);
@@ -104,7 +109,7 @@ pub async fn fingerprint_tls(
 
     // Extract peer certificate
     if let Some(cert) = tls_stream.ssl().peer_certificate() {
-       // println!("Got peer certificate");
+        // println!("Got peer certificate");
         push_cert_info(&mut evidence, cert.as_ref());
     } else {
         println!("No peer certificate presented");
@@ -115,12 +120,14 @@ pub async fn fingerprint_tls(
         for (i, cert) in chain.iter().enumerate() {
             //println!("Chain cert {} subject: {:?}", i, cert_ref.subject_name());
             push_cert_info(&mut evidence, cert);
-           
+
             evidence.push_str(&format!("TLS_chain_index: {}\n", i));
         }
     }
 
-    Some(ServiceFingerprint::from_banner(ip, port, proto_name, evidence))
+    Some(ServiceFingerprint::from_banner(
+        ip, port, proto_name, evidence,
+    ))
 }
 fn push_cert_info(out: &mut String, cert: &X509Ref) {
     // Subject CN

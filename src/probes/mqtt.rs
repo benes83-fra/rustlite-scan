@@ -1,8 +1,8 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
 
 pub struct MqttProbe;
 
@@ -15,16 +15,15 @@ impl Probe for MqttProbe {
         let timeout_dur = Duration::from_millis(timeout_ms);
 
         // MQTT CONNECT packet (minimal, clean, no auth)
-       let connect_packet: [u8; 22] = [
-                                        0x10, 0x14,       // CONNECT, Remaining Length = 20
-                                        0x00, 0x04,       // Protocol Name Length
-                                        b'M', b'Q', b'T', b'T',
-                                        0x04,             // Protocol Level (3.1.1)
-                                        0x02,             // Flags (Clean Session)
-                                        0x00, 0x3C,       // Keepalive (60)
-                                        0x00, 0x08,       // Client ID length = 8
-                                        b'r', b'u', b's', b't', b'l', b'i', b't', b'e'
-                                    ];
+        let connect_packet: [u8; 22] = [
+            0x10, 0x14, // CONNECT, Remaining Length = 20
+            0x00, 0x04, // Protocol Name Length
+            b'M', b'Q', b'T', b'T', 0x04, // Protocol Level (3.1.1)
+            0x02, // Flags (Clean Session)
+            0x00, 0x3C, // Keepalive (60)
+            0x00, 0x08, // Client ID length = 8
+            b'r', b'u', b's', b't', b'l', b'i', b't', b'e',
+        ];
 
         // Connect TCP
         let addr = format!("{}:{}", ip, port);
@@ -39,7 +38,10 @@ impl Probe for MqttProbe {
         };
 
         // Send CONNECT
-        if timeout(timeout_dur, stream.write_all(&connect_packet)).await.is_err() {
+        if timeout(timeout_dur, stream.write_all(&connect_packet))
+            .await
+            .is_err()
+        {
             push_line(&mut evidence, "mqtt", "send_error");
             let mut fp = ServiceFingerprint::from_banner(ip, port, "mqtt", evidence);
             fp.confidence = confidence;
@@ -67,11 +69,19 @@ impl Probe for MqttProbe {
             confidence = 70;
 
             let return_code = resp[3];
-            push_line(&mut evidence, "mqtt_return_code", &format!("{}", return_code));
+            push_line(
+                &mut evidence,
+                "mqtt_return_code",
+                &format!("{}", return_code),
+            );
 
             match return_code {
                 0x00 => push_line(&mut evidence, "mqtt_status", "Connection Accepted"),
-                0x01 => push_line(&mut evidence, "mqtt_status", "Unacceptable Protocol Version"),
+                0x01 => push_line(
+                    &mut evidence,
+                    "mqtt_status",
+                    "Unacceptable Protocol Version",
+                ),
                 0x02 => push_line(&mut evidence, "mqtt_status", "Identifier Rejected"),
                 0x03 => push_line(&mut evidence, "mqtt_status", "Server Unavailable"),
                 0x04 => push_line(&mut evidence, "mqtt_status", "Bad Username or Password"),
@@ -85,14 +95,26 @@ impl Probe for MqttProbe {
         Some(fp)
     }
 
-    async fn probe_with_ctx(&self, ip: &str, port: u16, ctx: ProbeContext) -> Option<ServiceFingerprint> {
+    async fn probe_with_ctx(
+        &self,
+        ip: &str,
+        port: u16,
+        ctx: ProbeContext,
+    ) -> Option<ServiceFingerprint> {
         self.probe(
             ip,
             port,
-            ctx.get("timeout_ms").and_then(|s| s.parse::<u64>().ok()).unwrap_or(2000),
-        ).await
+            ctx.get("timeout_ms")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(2000),
+        )
+        .await
     }
 
-    fn ports(&self) -> Vec<u16> { vec![1883] }
-    fn name(&self) -> &'static str { "mqtt" }
+    fn ports(&self) -> Vec<u16> {
+        vec![1883]
+    }
+    fn name(&self) -> &'static str {
+        "mqtt"
+    }
 }

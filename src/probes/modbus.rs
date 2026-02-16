@@ -1,8 +1,8 @@
+use crate::probes::{helper::push_line, Probe, ProbeContext};
+use crate::service::ServiceFingerprint;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::probes::{Probe, ProbeContext, helper::push_line};
-use crate::service::ServiceFingerprint;
 
 pub struct ModbusProbe;
 
@@ -83,7 +83,6 @@ impl Probe for ModbusProbe {
             got_useful_response = true;
         }
 
-
         // --- 4) Finalize fingerprint ---
         if !got_useful_response {
             push_line(&mut evidence, "modbus", "no_useful_response");
@@ -111,7 +110,7 @@ impl Probe for ModbusProbe {
     }
 
     fn ports(&self) -> Vec<u16> {
-        vec![502,5020]
+        vec![502, 5020]
     }
 
     fn name(&self) -> &'static str {
@@ -137,8 +136,8 @@ async fn modbus_report_server_id(
         0x00, 0x01, // Transaction ID
         0x00, 0x00, // Protocol ID
         0x00, 0x06, // Length
-        0xFF,       // Unit ID
-        0x11,       // Function 0x11
+        0xFF, // Unit ID
+        0x11, // Function 0x11
         0x00, 0x00, // Dummy
         0x00, 0x00, // Padding
     ];
@@ -256,7 +255,6 @@ async fn modbus_report_server_id(
         push_line(evidence, "modbus_vendor", vendor);
     }
 
-
     // 80 = clean function + server ID parsed
     Some((resp, 80, vendor_conf))
 }
@@ -278,8 +276,8 @@ async fn modbus_read_holding_registers(
         0x00, 0x02, // Transaction ID
         0x00, 0x00, // Protocol ID
         0x00, 0x06, // Length
-        0xFF,       // Unit ID
-        0x03,       // Function 0x03
+        0xFF, // Unit ID
+        0x03, // Function 0x03
         0x00, 0x00, // Starting address
         0x00, 0x01, // Number of registers
     ];
@@ -323,7 +321,6 @@ async fn modbus_read_holding_registers(
         return Some(60);
     }
 
-
     if function != 0x03 {
         push_line(
             evidence,
@@ -342,11 +339,7 @@ async fn modbus_read_holding_registers(
     }
 
     let registers = &resp[9..9 + byte_count];
-    push_line(
-        evidence,
-        "modbus_registers",
-        &format!("{:02X?}", registers),
-    );
+    push_line(evidence, "modbus_registers", &format!("{:02X?}", registers));
 
     // 80 = clean function + registers parsed
     Some(80)
@@ -362,7 +355,7 @@ fn modbus_exception_description(code: u8) -> &'static str {
         0x08 => "Memory Parity Error",
         0x0A => "Gateway Path Unavailable",
         0x0B => "Gateway Target Device Failed to Respond",
-        _    => "Unknown Exception",
+        _ => "Unknown Exception",
     }
 }
 
@@ -383,8 +376,8 @@ async fn modbus_read_input_registers(
         0x00, 0x03, // Transaction ID
         0x00, 0x00, // Protocol ID
         0x00, 0x06, // Length
-        0xFF,       // Unit ID
-        0x04,       // Function 0x04
+        0xFF, // Unit ID
+        0x04, // Function 0x04
         0x00, 0x00, // Starting address
         0x00, 0x01, // Number of registers
     ];
