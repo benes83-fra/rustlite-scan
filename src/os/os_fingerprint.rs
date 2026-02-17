@@ -595,6 +595,22 @@ pub fn infer_os(
             }
         }
     }
+    let mut rst_times: Vec<u128> = Vec::new();
+
+    // Extract timing from evidence
+    for fp in service_fps {
+        if fp.protocol == "tcp_rst" {
+            if let Some(ev) = &fp.evidence {
+                for line in ev.lines() {
+                    if let Some(v) = line.strip_prefix("tcp_rst_time: ") {
+                        if let Ok(t) = v.trim().parse::<u128>() {
+                            rst_times.push(t);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Timing analysis
     if let (Some(st), Some(rt)) = (syn_time, rst_time) {
@@ -608,6 +624,97 @@ pub fn infer_os(
         if delta > 50_000 {
             synproxy_suspect = true;
             synproxy_reason.push_str("large_syn_rst_gap; ");
+        }
+    }
+    let mut lb_suspect = false;
+    let mut lb_reason = String::new();
+
+    if rst_times.len() >= 3 {
+        // basic stats
+        let n = rst_times.len() as f64;
+        let mean = rst_times.iter().map(|&t| t as f64).sum::<f64>() / n;
+
+        let var = rst_times
+            .iter()
+            .map(|&t| {
+                let dt = t as f64 - mean;
+                dt * dt
+            })
+            .sum::<f64>()
+            / n;
+
+        let stddev = var.sqrt();
+
+        // Heuristic: high jitter relative to mean → likely multiple backends
+        // e.g. mean > 20ms and stddev > 0.5 * mean
+        if mean > 20_000.0 && stddev > 0.5 * mean {
+            lb_suspect = true;
+            lb_reason.push_str(&format!(
+                "rst_jitter_high; mean_us={:.0}, stddev_us={:.0}; ",
+                mean, stddev
+            ));
+        }
+    }
+    let mut lb_family: Option<&'static str> = None;
+
+    if lb_suspect {
+        // Compute mean/stddev again (you already have them)
+        let n = rst_times.len() as f64;
+        let mean = rst_times.iter().map(|&t| t as f64).sum::<f64>() / n;
+        let var = rst_times
+            .iter()
+            .map(|&t| {
+                let dt = t as f64 - mean;
+                dt * dt
+            })
+            .sum::<f64>()
+            / n;
+        let stddev = var.sqrt();
+
+        // Extract TTLs from RST evidence
+        let mut rst_ttls = Vec::new();
+        for fp in service_fps {
+            if fp.protocol == "tcp_rst" {
+                if let Some(ev) = &fp.evidence {
+                    for line in ev.lines() {
+                        if let Some(v) = line.strip_prefix("tcp_rst_ttl: ") {
+                            if let Ok(t) = v.trim().parse::<u8>() {
+                                rst_ttls.push(t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let ttl_uniform = rst_ttls.iter().all(|&t| t == rst_ttls[0]);
+        let ttl = rst_ttls.get(0).copied().unwrap_or(64);
+
+        // -------------------------
+        // Cloudflare
+        // -------------------------
+        if ttl == 255 && stddev > 0.5 * mean && mean > 100_000.0 {
+            lb_family = Some("cloudflare");
+        }
+        // -------------------------
+        // AWS ELB / ALB
+        // -------------------------
+        else if ttl == 60 || ttl == 64 {
+            if stddev < 0.2 * mean && mean >= 30_000.0 && mean <= 90_000.0 {
+                lb_family = Some("aws_elb");
+            }
+        }
+        // -------------------------
+        // HAProxy
+        // -------------------------
+        else if ttl_uniform && stddev < 0.1 * mean && mean < 20_000.0 {
+            lb_family = Some("haproxy");
+        }
+        // -------------------------
+        // nginx load balancer
+        // -------------------------
+        else if ttl_uniform && stddev > 0.1 * mean && stddev < 0.5 * mean {
+            lb_family = Some("nginx_lb");
         }
     }
 
@@ -648,6 +755,14 @@ pub fn infer_os(
         evidence.push_str("synproxy_suspect: true\n");
         evidence.push_str(&format!("synproxy_reason: {}\n", synproxy_reason));
     }
+    if lb_suspect {
+        evidence.push_str("load_balancer_suspect: true\n");
+        evidence.push_str(&format!("load_balancer_reason: {}\n", lb_reason));
+    }
+    if let Some(fam) = lb_family {
+        evidence.push_str(&format!("load_balancer_family: {}\n", fam));
+    }
+
     // ------------------------------
     // 8. Build synthetic fingerprint
     // ------------------------------
