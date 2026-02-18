@@ -717,6 +717,155 @@ pub fn infer_os(
             lb_family = Some("nginx_lb");
         }
     }
+    let mut cdn_suspect = false;
+    let mut cdn_reason = String::new();
+
+    // 1) HTTP headers / banners
+    for fp in service_fps {
+        if fp.protocol != "http" && fp.protocol != "https" {
+            continue;
+        }
+        if let Some(ev) = &fp.evidence {
+            let e = ev.to_lowercase();
+
+            if e.contains("cloudflare") || e.contains("cf-ray") || e.contains("cf-cache-status") {
+                cdn_suspect = true;
+                cdn_reason.push_str("cloudflare_headers; ");
+            }
+            if e.contains("akamai") || e.contains("akamai-ghost") {
+                cdn_suspect = true;
+                cdn_reason.push_str("akamai_headers; ");
+            }
+            if e.contains("fastly") || e.contains("via: 1.1 varnish") {
+                cdn_suspect = true;
+                cdn_reason.push_str("fastly_headers; ");
+            }
+            if e.contains("cloudfront") || e.contains("x-amz-cf-id") {
+                cdn_suspect = true;
+                cdn_reason.push_str("cloudfront_headers; ");
+            }
+        }
+    }
+
+    // 2) Port pattern: 80/443 only, no SSH/SMB/etc → very CDN-like
+    let only_web_ports = open_ports.iter().all(|p| *p == 80 || *p == 443);
+    if only_web_ports && lb_suspect {
+        cdn_suspect = true;
+        cdn_reason.push_str("only_web_ports_with_lb; ");
+    }
+
+    // 3) TTL + jitter: high TTL + high jitter → edge/CDN-ish
+    if lb_suspect {
+        // reuse rst_times / mean / stddev if you want, or recompute quickly:
+        if rst_times.len() >= 3 {
+            let n = rst_times.len() as f64;
+            let mean = rst_times.iter().map(|&t| t as f64).sum::<f64>() / n;
+            let var = rst_times
+                .iter()
+                .map(|&t| {
+                    let dt = t as f64 - mean;
+                    dt * dt
+                })
+                .sum::<f64>()
+                / n;
+            let stddev = var.sqrt();
+
+            // collect RST TTLs
+            let mut rst_ttls = Vec::new();
+            for fp in service_fps {
+                if fp.protocol == "tcp_rst" {
+                    if let Some(ev) = &fp.evidence {
+                        for line in ev.lines() {
+                            if let Some(v) = line.strip_prefix("tcp_rst_ttl: ") {
+                                if let Ok(t) = v.trim().parse::<u8>() {
+                                    rst_ttls.push(t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let ttl = rst_ttls.get(0).copied().unwrap_or(64);
+
+            if ttl >= 200 && stddev > 0.5 * mean && mean > 80_000.0 {
+                cdn_suspect = true;
+                cdn_reason.push_str("edge_like_ttl_and_jitter; ");
+            }
+        }
+    }
+    let mut cdn_family: Option<&'static str> = None;
+
+    // 1) Header-based detection
+    for fp in service_fps {
+        if fp.protocol == "http" || fp.protocol == "https" {
+            if let Some(ev) = &fp.evidence {
+                let e = ev.to_lowercase();
+
+                if e.contains("cloudflare") || e.contains("cf-ray") {
+                    cdn_family = Some("cloudflare_edge");
+                }
+                if e.contains("sucuri") || e.contains("cloudproxy") {
+                    cdn_family = Some("sucuri_cloudproxy");
+                }
+                if e.contains("akamai") || e.contains("akamai-ghost") {
+                    cdn_family = Some("akamai_edge");
+                }
+                if e.contains("fastly") || e.contains("varnish") {
+                    cdn_family = Some("fastly_edge");
+                }
+                if e.contains("cloudfront") || e.contains("x-amz-cf-id") {
+                    cdn_family = Some("aws_cloudfront_edge");
+                }
+            }
+        }
+
+        // TLS-based detection
+        if fp.protocol == "tls" {
+            if let Some(ev) = &fp.evidence {
+                let e = ev.to_lowercase();
+
+                if e.contains("cloudflare") {
+                    cdn_family = Some("cloudflare_edge");
+                }
+                if e.contains("sucuri") {
+                    cdn_family = Some("sucuri_cloudproxy");
+                }
+                if e.contains("akamai") {
+                    cdn_family = Some("akamai_edge");
+                }
+                if e.contains("fastly") {
+                    cdn_family = Some("fastly_edge");
+                }
+                if e.contains("cloudfront") {
+                    cdn_family = Some("aws_cloudfront_edge");
+                }
+            }
+        }
+    }
+
+    // 2) TTL-based detection
+    if cdn_family.is_none() {
+        if let Some(syn) = &syn_fp {
+            if let Some(ttl) = syn.ttl {
+                let ttl = normalize_ttl(ttl);
+
+                if ttl == 255 {
+                    cdn_family = Some("cdn_edge_high_ttl");
+                }
+            }
+        }
+    }
+
+    // 3) SYN/RST mismatch + only web ports → reverse proxy
+    let only_web = open_ports.iter().all(|p| *p == 80 || *p == 443);
+    if cdn_family.is_none() && only_web && firewall_suspect {
+        cdn_family = Some("generic_reverse_proxy");
+    }
+
+    // 4) SYN fingerprint OS != banner OS → WAF
+    if cdn_family.is_none() && firewall_suspect {
+        cdn_family = Some("generic_waf");
+    }
 
     // ------------------------------
     // 7. Build evidence string
@@ -761,6 +910,13 @@ pub fn infer_os(
     }
     if let Some(fam) = lb_family {
         evidence.push_str(&format!("load_balancer_family: {}\n", fam));
+    }
+    if cdn_suspect {
+        evidence.push_str("cdn_edge_suspect: true\n");
+        evidence.push_str(&format!("cdn_edge_reason: {}\n", cdn_reason));
+    }
+    if let Some(cf) = cdn_family {
+        evidence.push_str(&format!("cdn_family: {}\n", cf));
     }
 
     // ------------------------------
