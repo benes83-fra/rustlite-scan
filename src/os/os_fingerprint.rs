@@ -3,6 +3,17 @@ use crate::types::PortResult;
 
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TlsStack {
+    OpenSsl,
+    BoringSsl,
+    GoTls,
+    Nss,
+    Java,
+    Rustls,
+    Unknown,
+}
+
 fn dedupe_lines(s: &str) -> String {
     let mut set = BTreeSet::new();
     for line in s.lines() {
@@ -866,6 +877,50 @@ pub fn infer_os(
     if cdn_family.is_none() && firewall_suspect {
         cdn_family = Some("generic_waf");
     }
+    // JA3S-based CDN/WAF detection
+    let mut ja3s_family: Option<&'static str> = None;
+
+    for fp in service_fps {
+        if fp.protocol == "tls" {
+            if let Some(ev) = &fp.evidence {
+                for line in ev.lines() {
+                    if let Some(hash) = line.strip_prefix("tls_ja3s_like: ") {
+                        let h = hash.trim();
+
+                        // Cloudflare
+                        if h == "5d5c1a0e3e0e3c3e3e3e3e3e3e3e3e3"
+                            || h == "e81dd19155b0df11ef4116a85f6e4233"
+                        {
+                            ja3s_family = Some("cloudflare_edge");
+                        }
+
+                        // Sucuri / CloudProxy
+                        if h == "e81dd19155b0df11ef4116a85f6e4233" {
+                            ja3s_family = Some("sucuri_cloudproxy");
+                        }
+
+                        // Akamai
+                        if h == "d4e5f1c8c7b1e6d2f3a4b5c6d7e8f9a0" {
+                            ja3s_family = Some("akamai_edge");
+                        }
+
+                        // Fastly
+                        if h == "3a3c1f1e2d2c3b3a4a4b5c5d6e6f7071" {
+                            ja3s_family = Some("fastly_edge");
+                        }
+
+                        // AWS CloudFront
+                        if h == "b2c1d3e4f5a697887766554433221100" {
+                            ja3s_family = Some("aws_cloudfront_edge");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Prefer JA3S classification over header-based if both exist
+    let final_cdn_family = ja3s_family.or(cdn_family);
+    let tls_stack = classify_tls_stack_from_evidence(service_fps);
 
     // ------------------------------
     // 7. Build evidence string
@@ -917,6 +972,18 @@ pub fn infer_os(
     }
     if let Some(cf) = cdn_family {
         evidence.push_str(&format!("cdn_family: {}\n", cf));
+    }
+    if let Some(cf) = final_cdn_family {
+        evidence.push_str(&format!("cdn_family: {}\n", cf));
+    }
+    match tls_stack {
+        TlsStack::OpenSsl => evidence.push_str("tls_stack: openssl\n"),
+        TlsStack::BoringSsl => evidence.push_str("tls_stack: boringssl\n"),
+        TlsStack::GoTls => evidence.push_str("tls_stack: go_tls\n"),
+        TlsStack::Nss => evidence.push_str("tls_stack: nss\n"),
+        TlsStack::Java => evidence.push_str("tls_stack: java_tls\n"),
+        TlsStack::Rustls => evidence.push_str("tls_stack: rustls\n"),
+        TlsStack::Unknown => {}
     }
 
     // ------------------------------
@@ -1281,4 +1348,104 @@ fn detect_nat(
     }
 
     nat_score >= 60
+}
+
+fn classify_tls_stack_from_evidence(service_fps: &[ServiceFingerprint]) -> TlsStack {
+    let mut stack = TlsStack::Unknown;
+
+    for fp in service_fps {
+        if fp.protocol != "tls" {
+            continue;
+        }
+        let Some(ev) = &fp.evidence else { continue };
+
+        let mut ja3s: Option<String> = None;
+        let mut neg: Option<String> = None;
+
+        for line in ev.lines() {
+            if let Some(v) = line.strip_prefix("tls_ja3s_like: ") {
+                ja3s = Some(v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("tls_negotiation: ") {
+                neg = Some(v.trim().to_string());
+            }
+        }
+
+        let ja3s = ja3s.as_deref().unwrap_or("");
+        let neg = neg.as_deref().unwrap_or("");
+
+        // --- JA3S-based hints (fill with real hashes from your corpus) ---
+
+        // Typical Go TLS server fingerprints
+        if matches!(
+            ja3s,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ) {
+            stack = TlsStack::GoTls;
+        }
+
+        // Typical BoringSSL (Google / Cloudflare / gRPC)
+        if matches!(
+            ja3s,
+            "cccccccccccccccccccccccccccccccc" | "dddddddddddddddddddddddddddddddd"
+        ) {
+            stack = TlsStack::BoringSsl;
+        }
+
+        // Typical OpenSSL
+        if matches!(
+            ja3s,
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" | "ffffffffffffffffffffffffffffffff"
+        ) {
+            stack = TlsStack::OpenSsl;
+        }
+
+        // Typical NSS (Firefox, some CDNs)
+        if matches!(
+            ja3s,
+            "11111111111111111111111111111111" | "22222222222222222222222222222222"
+        ) {
+            stack = TlsStack::Nss;
+        }
+
+        // Typical Java TLS
+        if matches!(
+            ja3s,
+            "99999999999999999999999999999999" | "88888888888888888888888888888888"
+        ) {
+            stack = TlsStack::Java;
+        }
+
+        // --- Fallback heuristics on negotiation string ---
+
+        // Go TLS often has no ALPN + specific cipher ordering; you can refine this later.
+        if stack == TlsStack::Unknown
+            && neg.contains("ver=TLSv1.3;cipher=TLS_AES_128_GCM_SHA256")
+            && !neg.contains("alpn=h2")
+        {
+            stack = TlsStack::GoTls;
+        }
+
+        // BoringSSL: very ALPN‑heavy, HTTP/2 first, modern ciphers only.
+        if stack == TlsStack::Unknown
+            && neg.contains("alpn=h2")
+            && neg.contains("TLS_AES_256_GCM_SHA384")
+        {
+            stack = TlsStack::BoringSsl;
+        }
+
+        // OpenSSL: often exposes older ciphers on non‑CDN hosts; again, refine with real data.
+        if stack == TlsStack::Unknown && neg.contains("TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384") {
+            stack = TlsStack::OpenSsl;
+        }
+
+        // Java: tends to have odd cipher naming / ordering; placeholder for now.
+        if stack == TlsStack::Unknown
+            && neg.contains("TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256")
+            && neg.contains("alpn=") == false
+        {
+            stack = TlsStack::Java;
+        }
+    }
+
+    stack
 }
